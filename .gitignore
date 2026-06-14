@@ -1,0 +1,32 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+
+# Xcode
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.vscode/
+.idea/
+
+# Local configuration and logs
+.env
+.env.*
+!.env.example
+*.log
+
+# Test and coverage output
+.coverage/
+coverage/
+*.profraw
+*.profdata

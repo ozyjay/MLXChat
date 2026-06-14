@@ -33,6 +33,18 @@ final class CLIOptionsTests: XCTestCase {
             XCTAssertEqual(error as? CLIOptionsError, .unknownArgument("--unknown"))
         }
     }
+
+    func testRelativeBaseURLThrows() {
+        XCTAssertThrowsError(try CLIOptions(arguments: ["--base-url", "provider"])) { error in
+            XCTAssertEqual(error as? CLIOptionsError, .invalidBaseURLError("provider"))
+        }
+    }
+
+    func testUnsupportedBaseURLSchemeThrows() {
+        XCTAssertThrowsError(try CLIOptions(arguments: ["--base-url", "file:///tmp/provider"])) { error in
+            XCTAssertEqual(error as? CLIOptionsError, .invalidBaseURLError("file:///tmp/provider"))
+        }
+    }
 }
 
 final class FakeTransport: HTTPTransport {

@@ -45,7 +45,10 @@ public struct CLIOptions {
                     throw CLIOptionsError.missingValue("--base-url")
                 }
                 let value = arguments[index + 1]
-                guard let parsedURL = URL(string: value) else {
+                guard let parsedURL = URL(string: value),
+                      let scheme = parsedURL.scheme?.lowercased(),
+                      ["http", "https"].contains(scheme),
+                      parsedURL.host != nil else {
                     throw CLIOptionsError.invalidBaseURLError(value)
                 }
                 baseURL = parsedURL
