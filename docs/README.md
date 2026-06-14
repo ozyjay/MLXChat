@@ -10,3 +10,15 @@ Recommended reading order:
 4. [Development workflow](development-workflow.md): how future agents should add tools while staying aligned with MLXDashboard.
 
 `../MLXDashboard` is the source of truth for provider behaviour. These docs should be updated whenever MLXDashboard changes its provider routes, model aliases, routing policy, or localhost safety assumptions.
+
+## MVP: Swift Smoke CLI
+
+The first implemented tool is a lightweight Swift command-line smoke tester for provider compatibility.
+
+- Run: `swift run mlxchat`
+- Show CLI flags: `swift run mlxchat --help`
+- Common options:
+  - `--base-url` (default: `http://127.0.0.1:8123`)
+  - `--timeout`
+  - `--json`
+  - `--no-stream`
