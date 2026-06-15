@@ -132,6 +132,97 @@ final class SmokeTestRunnerTests: XCTestCase {
     }
 }
 
+final class ProviderChatCompletionTests: XCTestCase {
+    func testCompleteChatParsesAssistantMessageContent() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"id":"chat","model":"mlx-ask","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from MLX."}}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.completeChat(
+            model: "mlx-ask",
+            messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+        )
+
+        XCTAssertEqual(result.model, "mlx-ask")
+        XCTAssertEqual(result.assistantText, "Hello from MLX.")
+        XCTAssertEqual(result.statusCode, 200)
+        XCTAssertFalse(result.rawBody.isEmpty)
+    }
+
+    func testCompleteChatParsesTextFallback() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"id":"chat","choices":[{"index":0,"text":"Fallback text reply."}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.completeChat(
+            model: "mlx-fast",
+            messages: [ChatTranscriptMessage(role: "user", content: "Use fallback")]
+        )
+
+        XCTAssertEqual(result.model, "mlx-fast")
+        XCTAssertEqual(result.assistantText, "Fallback text reply.")
+        XCTAssertEqual(result.statusCode, 200)
+    }
+
+    func testCompleteChatThrowsForNonSuccessStatus() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 503,
+                    body: Data(#"{"error":"provider unavailable"}"#.utf8)
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        do {
+            _ = try await client.completeChat(
+                model: "mlx-plan",
+                messages: [ChatTranscriptMessage(role: "user", content: "Plan")]
+            )
+            XCTFail("Expected non-success chat response to throw.")
+        } catch let error as ProviderClientError {
+            XCTAssertEqual(
+                error.localizedDescription,
+                #"Unexpected status code 503: {"error":"provider unavailable"}"#
+            )
+        }
+    }
+}
+
+final class LocalProviderURLValidatorTests: XCTestCase {
+    func testAcceptsLocalhostProviderURLs() {
+        XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123"))
+        XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://localhost:8123"))
+        XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://[::1]:8123"))
+    }
+
+    func testRejectsRemoteAndUnsupportedProviderURLs() {
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "http://192.168.1.10:8123"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "https://example.com"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "file:///tmp/provider"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "provider"))
+    }
+}
+
 struct MockResponse {
     let statusCode: Int
     let body: Data

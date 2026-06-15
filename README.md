@@ -2,7 +2,7 @@
 
 MLXChat contains client-side tools for checking and exercising the MLXDashboard localhost provider. It is the sister project to `../MLXDashboard`, which remains the source of truth for provider behaviour, model management, and runtime setup.
 
-The current implemented tool is a Swift command-line smoke tester for the local OpenAI-compatible provider.
+The current implemented tools are a Swift command-line smoke tester and a lightweight macOS SwiftUI chat front-end for the local OpenAI-compatible provider.
 
 ## Quick Start
 
@@ -12,6 +12,7 @@ From this repository:
 swift test
 swift run mlxchat --help
 swift run mlxchat
+swift run mlxchat-app
 ```
 
 By default, the CLI targets:

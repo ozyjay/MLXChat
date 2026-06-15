@@ -95,10 +95,34 @@ public struct ProviderClient {
     public func chatCompletions(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
         let body = ChatCompletionPayload(
             model: model,
-            messages: [ChatMessage(role: "user", content: prompt)],
+            messages: [ChatTranscriptMessage(role: "user", content: prompt)],
             stream: stream
         )
         return try await request(path: "/v1/chat/completions", method: .post, body: body)
+    }
+
+    public func completeChat(model: String, messages: [ChatTranscriptMessage]) async throws -> ChatCompletionResult {
+        let body = ChatCompletionPayload(
+            model: model,
+            messages: messages,
+            stream: false
+        )
+        let response = try await request(path: "/v1/chat/completions", method: .post, body: body)
+        guard response.isSuccess else {
+            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+        }
+
+        let payload = try jsonDecoder.decode(ChatCompletionResponsePayload.self, from: response.body)
+        let assistantText = payload.choices.first?.message?.content
+            ?? payload.choices.first?.text
+            ?? ""
+
+        return ChatCompletionResult(
+            model: payload.model ?? model,
+            assistantText: assistantText,
+            statusCode: response.statusCode,
+            rawBody: response.body
+        )
     }
 
     public func responses(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
@@ -157,15 +181,24 @@ public struct ProviderClient {
         let id: String
     }
 
-    private struct ChatMessage: Encodable {
-        let role: String
-        let content: String
-    }
-
     private struct ChatCompletionPayload: Encodable {
         let model: String
-        let messages: [ChatMessage]
+        let messages: [ChatTranscriptMessage]
         let stream: Bool
+    }
+
+    private struct ChatCompletionResponsePayload: Decodable {
+        let model: String?
+        let choices: [ChatCompletionChoice]
+    }
+
+    private struct ChatCompletionChoice: Decodable {
+        let message: ChatCompletionMessage?
+        let text: String?
+    }
+
+    private struct ChatCompletionMessage: Decodable {
+        let content: String?
     }
 
     private struct ResponsesPayload: Encodable {

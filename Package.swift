@@ -15,11 +15,19 @@ let package = Package(
             name: "mlxchat",
             targets: ["mlxchat"]
         ),
+        .executable(
+            name: "mlxchat-app",
+            targets: ["MLXChatApp"]
+        ),
     ],
     targets: [
         .target(name: "MLXChatCore"),
         .executableTarget(
             name: "mlxchat",
+            dependencies: ["MLXChatCore"]
+        ),
+        .executableTarget(
+            name: "MLXChatApp",
             dependencies: ["MLXChatCore"]
         ),
         .testTarget(
