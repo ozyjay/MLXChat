@@ -92,6 +92,10 @@ MLXChat also understands optional `/api/v0/models` capability fields for text mo
 
 These fields are compatibility guidance for MLXChat clients. They do not add image diffusion support; image generation requires a separate provider contract.
 
+MLXChat treats `GET /v1/models` as the runnable model allowlist. When `/api/v0/models` contains metadata for models that are not advertised by `/v1/models`, MLXChat ignores those extra rows in the sidebar and uses metadata only to label advertised models.
+
+Runnable text diffusion models should appear in `/v1/models`, be labelled as `generation_type: "text"` and `model_family: "diffusion_text"` in `/api/v0/models`, and respond through `/v1/chat/completions` with the same `choices[0].message.content` shape as normal chat models. MLXChat does not route text diffusion models to image-generation endpoints or render image payloads.
+
 ## Path Normalisation
 
 MLXDashboard normalises several client path variants before routing. Observed examples include:

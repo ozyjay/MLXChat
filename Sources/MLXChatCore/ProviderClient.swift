@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 public enum HTTPMethod: String {
     case get = "GET"
@@ -61,6 +62,8 @@ public struct HTTPResponse {
 }
 
 public struct ProviderClient {
+    private static let logger = Logger(subsystem: "MLXChat", category: "provider")
+
     private let baseURL: URL
     private let transport: HTTPTransport
     private let jsonEncoder: JSONEncoder
@@ -71,6 +74,7 @@ public struct ProviderClient {
         self.transport = transport
         self.jsonEncoder = JSONEncoder()
         self.jsonDecoder = JSONDecoder()
+        Self.logger.debug("ProviderClient created baseURL=\(ProviderLogSanitizer.safeBaseURLDescription(baseURL), privacy: .public)")
     }
 
     public init(baseURL: URL, timeout: TimeInterval) {
@@ -89,6 +93,7 @@ public struct ProviderClient {
 
         let payload = try jsonDecoder.decode(ModelsPayload.self, from: response.body)
         let modelNames = payload.data.map { $0.id }
+        Self.logger.info("Fetched advertised models count=\(modelNames.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
         return (modelNames, response.statusCode)
     }
 
@@ -99,7 +104,9 @@ public struct ProviderClient {
         }
 
         let payload = try jsonDecoder.decode(ModelMetadataPayload.self, from: response.body)
-        return (payload.data.map(\.metadata), response.statusCode)
+        let metadata = payload.data.map(\.metadata)
+        Self.logger.info("Fetched model metadata count=\(metadata.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
+        return (metadata, response.statusCode)
     }
 
     public func chatCompletions(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
@@ -126,6 +133,7 @@ public struct ProviderClient {
         let assistantText = payload.choices.first?.message?.content
             ?? payload.choices.first?.text
             ?? ""
+        Self.logger.info("Completed chat model=\(model, privacy: .public) resolvedModel=\(payload.model ?? model, privacy: .public) status=\(response.statusCode, privacy: .public) replyCharacters=\(assistantText.count, privacy: .public)")
 
         return ChatCompletionResult(
             model: payload.model ?? model,
@@ -150,19 +158,27 @@ public struct ProviderClient {
         request.httpMethod = method.rawValue
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        Self.logger.debug("Provider request start method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public)")
 
         if let body {
             do {
                 request.httpBody = try jsonEncoder.encode(AnyEncodable(value: body))
             } catch {
+                Self.logger.error("Provider request encode failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 throw ProviderClientError.requestFailed(error)
             }
         }
 
         do {
             let (data, response) = try await transport.send(request)
+            if (200..<300).contains(response.statusCode) {
+                Self.logger.debug("Provider request finished method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) status=\(response.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)")
+            } else {
+                Self.logger.error("Provider request non-success method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) status=\(response.statusCode, privacy: .public) body=\"\(ProviderLogSanitizer.responseSnippet(data), privacy: .public)\"")
+            }
             return HTTPResponse(statusCode: response.statusCode, body: data)
         } catch {
+            Self.logger.error("Provider request failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             throw ProviderClientError.requestFailed(error)
         }
     }

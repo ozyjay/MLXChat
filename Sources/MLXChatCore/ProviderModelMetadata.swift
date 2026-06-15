@@ -62,6 +62,16 @@ public struct ProviderModelCatalog: Equatable, Sendable {
         }
     }
 
+    public init(advertisedModelIDs: [String], metadata: [ProviderModelMetadata]) {
+        var metadataByID: [String: ProviderModelMetadata] = [:]
+        for model in metadata {
+            metadataByID[model.id] = model
+        }
+        self.models = advertisedModelIDs.map {
+            metadataByID[$0] ?? ProviderModelMetadata(id: $0, capability: .chatText, state: nil)
+        }
+    }
+
     public func model(id: String) -> ProviderModelMetadata? {
         models.first { $0.id == id }
     }

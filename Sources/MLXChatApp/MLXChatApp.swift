@@ -1,5 +1,6 @@
 import AppKit
 import MLXChatCore
+import OSLog
 import SwiftUI
 
 @main
@@ -106,7 +107,7 @@ struct SidebarView: View {
                                     model: model,
                                     isSelected: model.id == viewModel.selectedModel
                                 ) {
-                                    viewModel.selectedModel = model.id
+                                    viewModel.selectModel(model.id)
                                 }
                             }
                         }
@@ -405,6 +406,9 @@ struct ModelNoticeBanner: View {
 
 @MainActor
 final class ChatAppViewModel: ObservableObject {
+    private static let appLogger = Logger(subsystem: "MLXChat", category: "app")
+    private static let chatLogger = Logger(subsystem: "MLXChat", category: "chat")
+
     @Published var baseURLText = "http://127.0.0.1:8123"
     @Published var healthState: ProviderHealthState = .unknown
     @Published var models: [ProviderModelMetadata] = []
@@ -452,6 +456,7 @@ final class ChatAppViewModel: ObservableObject {
         hasConfigured = true
         self.baseURLText = baseURLText
         self.selectedModel = selectedModel
+        Self.appLogger.info("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText), privacy: .public) persistedModel=\(selectedModel, privacy: .public)")
 
         Task {
             await refreshProvider()
@@ -463,28 +468,39 @@ final class ChatAppViewModel: ObservableObject {
             healthState = .invalid
             models = []
             errorMessage = "Provider URL must be localhost."
+            Self.appLogger.error("Provider refresh blocked invalidBaseURL=\(self.safeBaseURLDescription(from: self.baseURLText), privacy: .public)")
             return
         }
 
         isRefreshing = true
         healthState = .checking
         errorMessage = nil
+        Self.appLogger.info("Provider refresh started baseURL=\(ProviderLogSanitizer.safeBaseURLDescription(baseURL), privacy: .public)")
 
         let client = ProviderClient(baseURL: baseURL, timeout: 10)
         do {
             let health = try await client.health()
             healthState = health.isSuccess ? .healthy : .disconnected
+            Self.appLogger.info("Provider health status=\(health.statusCode, privacy: .public) healthy=\(health.isSuccess, privacy: .public)")
 
             let catalog = try await fetchModelCatalog(using: client)
             models = catalog.models
             selectedModel = catalog.defaultSelection(persistedSelection: selectedModel)
+            Self.appLogger.info("Provider refresh finished models=\(self.models.count, privacy: .public) selectedModel=\(self.selectedModel, privacy: .public)")
         } catch {
             healthState = .disconnected
             models = []
             errorMessage = error.localizedDescription
+            Self.appLogger.error("Provider refresh failed error=\(error.localizedDescription, privacy: .public)")
         }
 
         isRefreshing = false
+    }
+
+    func selectModel(_ modelID: String) {
+        selectedModel = modelID
+        let capability = catalog.model(id: modelID)?.capability.displayName ?? "Unknown"
+        Self.appLogger.info("Model selected id=\(modelID, privacy: .public) capability=\(capability, privacy: .public)")
     }
 
     func sendMessage() async {
@@ -492,15 +508,18 @@ final class ChatAppViewModel: ObservableObject {
         guard !prompt.isEmpty else { return }
         guard let baseURL = LocalProviderURLValidator.providerURL(from: baseURLText) else {
             errorMessage = "Provider URL must be localhost."
+            Self.chatLogger.error("Send blocked invalidBaseURL=\(self.safeBaseURLDescription(from: self.baseURLText), privacy: .public)")
             return
         }
         guard !selectedModel.isEmpty else {
             errorMessage = "Select a model."
+            Self.chatLogger.error("Send blocked noModelSelected")
             return
         }
         guard catalog.canSend(with: selectedModel) else {
             errorMessage = catalog.model(id: selectedModel)?.capability.unsupportedReason
                 ?? "Selected model cannot be used for text chat."
+            Self.chatLogger.error("Send blocked unsupportedModel=\(self.selectedModel, privacy: .public) reason=\(self.errorMessage ?? "unknown", privacy: .public)")
             return
         }
 
@@ -512,11 +531,15 @@ final class ChatAppViewModel: ObservableObject {
 
         let client = ProviderClient(baseURL: baseURL, timeout: 60)
         do {
+            let capability = catalog.model(id: selectedModel)?.capability.displayName ?? "Unknown"
+            Self.chatLogger.info("Send started model=\(self.selectedModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
             let transcript = messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) }
             let result = try await client.completeChat(model: selectedModel, messages: transcript)
             messages.append(ChatDisplayMessage(role: "assistant", content: result.assistantText))
+            Self.chatLogger.info("Send finished model=\(result.model, privacy: .public) status=\(result.statusCode, privacy: .public) replyCharacters=\(result.assistantText.count, privacy: .public)")
         } catch {
             errorMessage = error.localizedDescription
+            Self.chatLogger.error("Send failed model=\(self.selectedModel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
         }
 
         isSending = false
@@ -525,16 +548,26 @@ final class ChatAppViewModel: ObservableObject {
     func clearTranscript() {
         messages = []
         errorMessage = nil
+        Self.chatLogger.info("Transcript cleared")
     }
 
     private func fetchModelCatalog(using client: ProviderClient) async throws -> ProviderModelCatalog {
+        let advertisedModels = try await client.fetchModels().models
         do {
             let metadata = try await client.fetchModelMetadata().models
-            return ProviderModelCatalog(models: metadata)
+            Self.appLogger.info("Building model catalog advertised=\(advertisedModels.count, privacy: .public) metadata=\(metadata.count, privacy: .public)")
+            return ProviderModelCatalog(advertisedModelIDs: advertisedModels, metadata: metadata)
         } catch {
-            let models = try await client.fetchModels().models
-            return ProviderModelCatalog(modelIDs: models)
+            Self.appLogger.warning("Model metadata unavailable; falling back to advertised models only error=\(error.localizedDescription, privacy: .public)")
+            return ProviderModelCatalog(modelIDs: advertisedModels)
         }
+    }
+
+    private func safeBaseURLDescription(from text: String) -> String {
+        guard let url = URL(string: text) else {
+            return "<invalid-url>"
+        }
+        return ProviderLogSanitizer.safeBaseURLDescription(url)
     }
 }
 

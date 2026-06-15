@@ -206,6 +206,33 @@ final class ProviderChatCompletionTests: XCTestCase {
             )
         }
     }
+
+    func testCompleteChatUsesChatCompletionsForTextDiffusionModels() async throws {
+        let diffusionModel = "mlx-community/Nemotron-Labs-Diffusion-3B-4bit"
+        let transport = RecordingTransport(
+            response: MockResponse(
+                statusCode: 200,
+                body: Data(
+                    #"{"id":"chat","model":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit","choices":[{"index":0,"message":{"role":"assistant","content":"Diffusion text reply."}}]}"#
+                        .utf8
+                )
+            )
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.completeChat(
+            model: diffusionModel,
+            messages: [ChatTranscriptMessage(role: "user", content: "Draft a short note")]
+        )
+
+        XCTAssertEqual(result.model, diffusionModel)
+        XCTAssertEqual(result.assistantText, "Diffusion text reply.")
+        XCTAssertEqual(transport.requestPaths, ["/v1/chat/completions"])
+        XCTAssertEqual(transport.requestMethods, ["POST"])
+        XCTAssertEqual(transport.requestBodies.count, 1)
+        XCTAssertTrue(transport.requestBodies[0].contains(#""model":"mlx-community\/Nemotron-Labs-Diffusion-3B-4bit""#))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""stream":false"#))
+    }
 }
 
 final class ProviderModelMetadataTests: XCTestCase {
@@ -300,6 +327,90 @@ final class ProviderModelMetadataTests: XCTestCase {
         XCTAssertEqual(catalog.models.map(\.capability), [.chatText, .chatText])
         XCTAssertEqual(catalog.defaultSelection(persistedSelection: ""), "mlx-plan")
     }
+
+    func testModelCatalogKeepsOnlyAdvertisedModelsWhenMetadataHasExtraRows() {
+        let catalog = ProviderModelCatalog(
+            advertisedModelIDs: [
+                "mlx-ask",
+                "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+            ],
+            metadata: [
+                ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+                ProviderModelMetadata(id: "Qwen/Qwen3-8B", capability: .chatText, state: "loaded"),
+                ProviderModelMetadata(
+                    id: "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+                    capability: .diffusionText,
+                    state: "loaded"
+                ),
+                ProviderModelMetadata(id: "mlx-community/gemma-4-12B-it-4bit", capability: .chatText, state: "loaded"),
+            ]
+        )
+
+        XCTAssertEqual(catalog.models.map(\.id), [
+            "mlx-ask",
+            "mlx-community/Nemotron-Labs-Diffusion-3B-4bit",
+        ])
+        XCTAssertEqual(catalog.model(id: "mlx-ask")?.capability, .chatText)
+        XCTAssertEqual(catalog.model(id: "mlx-community/Nemotron-Labs-Diffusion-3B-4bit")?.capability, .diffusionText)
+        XCTAssertNil(catalog.model(id: "Qwen/Qwen3-8B"))
+    }
+
+    func testModelCatalogPreservesAdvertisedModelsMissingFromMetadataAsChatText() {
+        let catalog = ProviderModelCatalog(
+            advertisedModelIDs: [
+                "mlx-ask",
+                "mlx-fast",
+            ],
+            metadata: [
+                ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+            ]
+        )
+
+        XCTAssertEqual(catalog.models, [
+            ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+            ProviderModelMetadata(id: "mlx-fast", capability: .chatText, state: nil),
+        ])
+    }
+
+    func testFutureMLXDashboardTextDiffusionShapeBuildsRunnableCatalog() async throws {
+        let diffusionModel = "mlx-community/Nemotron-Labs-Diffusion-3B-4bit"
+        let transport = FakeTransport(
+            responses: [
+                "GET /v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-fast"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit"}]}"#
+                            .utf8
+                    )
+                ),
+                "GET /api/v0/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-plan","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-fast","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"loaded"},{"id":"mlx-community/diffusiongemma-26B-A4B-it-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"unsupported","unsupported_reason":"Unsupported by installed mlx-lm runtime"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let advertisedModels = try await client.fetchModels().models
+        let metadata = try await client.fetchModelMetadata().models
+        let catalog = ProviderModelCatalog(advertisedModelIDs: advertisedModels, metadata: metadata)
+
+        XCTAssertEqual(catalog.models.map(\.id), [
+            "mlx-ask",
+            "mlx-plan",
+            "mlx-fast",
+            diffusionModel,
+        ])
+        XCTAssertEqual(catalog.model(id: "mlx-ask")?.capability, .chatText)
+        XCTAssertEqual(catalog.model(id: diffusionModel)?.capability, .diffusionText)
+        XCTAssertTrue(catalog.canSend(with: "mlx-ask"))
+        XCTAssertTrue(catalog.canSend(with: diffusionModel))
+        XCTAssertNil(catalog.model(id: "mlx-community/diffusiongemma-26B-A4B-it-4bit"))
+        XCTAssertEqual(catalog.defaultSelection(persistedSelection: ""), "mlx-ask")
+    }
 }
 
 final class LocalProviderURLValidatorTests: XCTestCase {
@@ -314,6 +425,35 @@ final class LocalProviderURLValidatorTests: XCTestCase {
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "https://example.com"))
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "file:///tmp/provider"))
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "provider"))
+    }
+}
+
+final class ProviderLogSanitizerTests: XCTestCase {
+    func testBaseURLDescriptionIncludesOnlySchemeHostAndPort() {
+        let url = URL(string: "http://user:secret@127.0.0.1:8123/private/path?token=abc")!
+
+        XCTAssertEqual(
+            ProviderLogSanitizer.safeBaseURLDescription(url),
+            "http://127.0.0.1:8123"
+        )
+    }
+
+    func testResponseSnippetTruncatesAndNormalisesWhitespace() {
+        let data = Data("first line\nsecond line with a lot of extra text".utf8)
+
+        XCTAssertEqual(
+            ProviderLogSanitizer.responseSnippet(data, maxLength: 26),
+            "first line second line ..."
+        )
+    }
+
+    func testResponseSnippetReportsBinaryData() {
+        let data = Data([0xFF, 0xFE, 0x00])
+
+        XCTAssertEqual(
+            ProviderLogSanitizer.responseSnippet(data, maxLength: 24),
+            "<non-utf8 body: 3 bytes>"
+        )
     }
 }
 
@@ -340,6 +480,32 @@ extension FakeTransport {
         guard let response = responses[key] else {
             throw URLError(.badServerResponse)
         }
+
+        let httpResponse = HTTPURLResponse(
+            url: request.url!,
+            statusCode: response.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+
+        return (response.body, httpResponse)
+    }
+}
+
+final class RecordingTransport: HTTPTransport {
+    private let response: MockResponse
+    private(set) var requestMethods: [String] = []
+    private(set) var requestPaths: [String] = []
+    private(set) var requestBodies: [String] = []
+
+    init(response: MockResponse) {
+        self.response = response
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        requestMethods.append(request.httpMethod ?? "GET")
+        requestPaths.append(request.url?.path ?? "")
+        requestBodies.append(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "")
 
         let httpResponse = HTTPURLResponse(
             url: request.url!,

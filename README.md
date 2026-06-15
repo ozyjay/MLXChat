@@ -36,7 +36,7 @@ The app:
 
 - checks provider health with `GET /health`;
 - lists models with `GET /v1/models`;
-- reads richer capability metadata from `GET /api/v0/models` when available;
+- overlays richer capability metadata from `GET /api/v0/models` when available, while only showing models advertised by `GET /v1/models`;
 - selects `mlx-ask` by default when it is advertised, otherwise the first model;
 - sends normal chat and text diffusion chat requests to `POST /v1/chat/completions`;
 - labels normal chat, text diffusion, and unsupported models in the sidebar;
@@ -44,7 +44,15 @@ The app:
 - accepts only localhost provider URLs such as `http://127.0.0.1:8123`, `http://localhost:8123`, or `http://[::1]:8123`.
 
 If MLXDashboard is not running, the app should show a disconnected state rather than crash.
-Image diffusion is not supported by MLXChat yet; text diffusion models are treated as text-generation models.
+Image diffusion is not supported by MLXChat yet. Text diffusion models must be advertised by MLXDashboard in `GET /v1/models`, labelled with `model_family: "diffusion_text"` in `GET /api/v0/models`, and returned as plain text chat-completion responses.
+
+The app and core provider client emit concise Unified Logging entries under the `MLXChat` subsystem. Use Console.app or:
+
+```sh
+log stream --predicate 'subsystem == "MLXChat"'
+```
+
+Logs include provider health, model counts, selected model IDs, request status codes, and response sizes/snippets for failures. They do not log full prompts, full assistant replies, or raw successful response bodies.
 
 ### CLI Smoke Tester
 
