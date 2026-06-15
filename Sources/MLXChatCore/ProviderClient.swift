@@ -93,20 +93,42 @@ public struct ProviderClient {
 
         let payload = try jsonDecoder.decode(ModelsPayload.self, from: response.body)
         let modelNames = payload.data.map { $0.id }
-        Self.logger.info("Fetched advertised models count=\(modelNames.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
+        Self.logger.notice("Fetched advertised models count=\(modelNames.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
         return (modelNames, response.statusCode)
     }
 
     public func fetchModelMetadata() async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
-        let response = try await request(path: "/api/v0/models", method: .get)
+        do {
+            return try await fetchModelMetadata(path: "/provider/v1/models")
+        } catch {
+            guard shouldFallbackToLegacyMetadataRoute(error) else {
+                throw error
+            }
+            Self.logger.warning("Canonical provider metadata unavailable; falling back to legacy /api/v0/models error=\(error.localizedDescription, privacy: .public)")
+            return try await fetchModelMetadata(path: "/api/v0/models")
+        }
+    }
+
+    private func fetchModelMetadata(path: String) async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
+        let response = try await request(path: path, method: .get)
         guard response.isSuccess else {
             throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
         }
 
         let payload = try jsonDecoder.decode(ModelMetadataPayload.self, from: response.body)
         let metadata = payload.data.map(\.metadata)
-        Self.logger.info("Fetched model metadata count=\(metadata.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
+        Self.logger.notice("Fetched model metadata count=\(metadata.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
         return (metadata, response.statusCode)
+    }
+
+    private func shouldFallbackToLegacyMetadataRoute(_ error: Error) -> Bool {
+        if case ProviderClientError.unexpectedStatusCode(404, _) = error {
+            return true
+        }
+        if case ProviderClientError.requestFailed = error {
+            return true
+        }
+        return false
     }
 
     public func chatCompletions(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
@@ -133,7 +155,7 @@ public struct ProviderClient {
         let assistantText = payload.choices.first?.message?.content
             ?? payload.choices.first?.text
             ?? ""
-        Self.logger.info("Completed chat model=\(model, privacy: .public) resolvedModel=\(payload.model ?? model, privacy: .public) status=\(response.statusCode, privacy: .public) replyCharacters=\(assistantText.count, privacy: .public)")
+        Self.logger.notice("Completed chat model=\(model, privacy: .public) resolvedModel=\(payload.model ?? model, privacy: .public) status=\(response.statusCode, privacy: .public) replyCharacters=\(assistantText.count, privacy: .public)")
 
         return ChatCompletionResult(
             model: payload.model ?? model,
@@ -217,7 +239,9 @@ public struct ProviderClient {
         let generationType: String?
         let modelFamily: String?
         let state: String?
+        let reason: String?
         let unsupportedReason: String?
+        let notInstalledReason: String?
 
         var metadata: ProviderModelMetadata {
             ProviderModelMetadata(
@@ -229,7 +253,10 @@ public struct ProviderClient {
 
         private var capability: ProviderModelCapability {
             if state == "unsupported" {
-                return .unsupported(reason: unsupportedReason ?? "Unsupported by provider")
+                return .unsupported(reason: unsupportedReason ?? reason ?? "Unsupported by provider")
+            }
+            if state == "not_installed" {
+                return .unsupported(reason: notInstalledReason ?? reason ?? "Model is not installed")
             }
             if generationType == "text", modelFamily == "diffusion_text" {
                 return .diffusionText
@@ -243,7 +270,9 @@ public struct ProviderClient {
             case generationType = "generation_type"
             case modelFamily = "model_family"
             case state
+            case reason
             case unsupportedReason = "unsupported_reason"
+            case notInstalledReason = "not_installed_reason"
         }
     }
 

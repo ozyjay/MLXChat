@@ -456,7 +456,7 @@ final class ChatAppViewModel: ObservableObject {
         hasConfigured = true
         self.baseURLText = baseURLText
         self.selectedModel = selectedModel
-        Self.appLogger.info("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText), privacy: .public) persistedModel=\(selectedModel, privacy: .public)")
+        Self.appLogger.notice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText), privacy: .public) persistedModel=\(selectedModel, privacy: .public)")
 
         Task {
             await refreshProvider()
@@ -475,18 +475,18 @@ final class ChatAppViewModel: ObservableObject {
         isRefreshing = true
         healthState = .checking
         errorMessage = nil
-        Self.appLogger.info("Provider refresh started baseURL=\(ProviderLogSanitizer.safeBaseURLDescription(baseURL), privacy: .public)")
+        Self.appLogger.notice("Provider refresh started baseURL=\(ProviderLogSanitizer.safeBaseURLDescription(baseURL), privacy: .public)")
 
         let client = ProviderClient(baseURL: baseURL, timeout: 10)
         do {
             let health = try await client.health()
             healthState = health.isSuccess ? .healthy : .disconnected
-            Self.appLogger.info("Provider health status=\(health.statusCode, privacy: .public) healthy=\(health.isSuccess, privacy: .public)")
+            Self.appLogger.notice("Provider health status=\(health.statusCode, privacy: .public) healthy=\(health.isSuccess, privacy: .public)")
 
             let catalog = try await fetchModelCatalog(using: client)
             models = catalog.models
             selectedModel = catalog.defaultSelection(persistedSelection: selectedModel)
-            Self.appLogger.info("Provider refresh finished models=\(self.models.count, privacy: .public) selectedModel=\(self.selectedModel, privacy: .public)")
+            Self.appLogger.notice("Provider refresh finished models=\(self.models.count, privacy: .public) selectedModel=\(self.selectedModel, privacy: .public)")
         } catch {
             healthState = .disconnected
             models = []
@@ -500,7 +500,7 @@ final class ChatAppViewModel: ObservableObject {
     func selectModel(_ modelID: String) {
         selectedModel = modelID
         let capability = catalog.model(id: modelID)?.capability.displayName ?? "Unknown"
-        Self.appLogger.info("Model selected id=\(modelID, privacy: .public) capability=\(capability, privacy: .public)")
+        Self.appLogger.notice("Model selected id=\(modelID, privacy: .public) capability=\(capability, privacy: .public)")
     }
 
     func sendMessage() async {
@@ -532,11 +532,11 @@ final class ChatAppViewModel: ObservableObject {
         let client = ProviderClient(baseURL: baseURL, timeout: 60)
         do {
             let capability = catalog.model(id: selectedModel)?.capability.displayName ?? "Unknown"
-            Self.chatLogger.info("Send started model=\(self.selectedModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
+            Self.chatLogger.notice("Send started model=\(self.selectedModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
             let transcript = messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) }
             let result = try await client.completeChat(model: selectedModel, messages: transcript)
             messages.append(ChatDisplayMessage(role: "assistant", content: result.assistantText))
-            Self.chatLogger.info("Send finished model=\(result.model, privacy: .public) status=\(result.statusCode, privacy: .public) replyCharacters=\(result.assistantText.count, privacy: .public)")
+            Self.chatLogger.notice("Send finished model=\(result.model, privacy: .public) status=\(result.statusCode, privacy: .public) replyCharacters=\(result.assistantText.count, privacy: .public)")
         } catch {
             errorMessage = error.localizedDescription
             Self.chatLogger.error("Send failed model=\(self.selectedModel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
@@ -548,14 +548,14 @@ final class ChatAppViewModel: ObservableObject {
     func clearTranscript() {
         messages = []
         errorMessage = nil
-        Self.chatLogger.info("Transcript cleared")
+        Self.chatLogger.notice("Transcript cleared")
     }
 
     private func fetchModelCatalog(using client: ProviderClient) async throws -> ProviderModelCatalog {
         let advertisedModels = try await client.fetchModels().models
         do {
             let metadata = try await client.fetchModelMetadata().models
-            Self.appLogger.info("Building model catalog advertised=\(advertisedModels.count, privacy: .public) metadata=\(metadata.count, privacy: .public)")
+            Self.appLogger.notice("Building model catalog advertised=\(advertisedModels.count, privacy: .public) metadata=\(metadata.count, privacy: .public)")
             return ProviderModelCatalog(advertisedModelIDs: advertisedModels, metadata: metadata)
         } catch {
             Self.appLogger.warning("Model metadata unavailable; falling back to advertised models only error=\(error.localizedDescription, privacy: .public)")

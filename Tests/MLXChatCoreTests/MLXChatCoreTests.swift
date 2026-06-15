@@ -49,6 +49,7 @@ final class CLIOptionsTests: XCTestCase {
 
 final class FakeTransport: HTTPTransport {
     private let responses: [String: MockResponse]
+    private(set) var requestKeys: [String] = []
 
     init(responses: [String: MockResponse]) {
         self.responses = responses
@@ -239,7 +240,7 @@ final class ProviderModelMetadataTests: XCTestCase {
     func testFetchModelMetadataParsesNormalChatTextModel() async throws {
         let transport = FakeTransport(
             responses: [
-                "GET /api/v0/models": MockResponse(
+                "GET /provider/v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
                         #"{"object":"list","data":[{"id":"mlx-ask","type":"llm","generation_type":"text","model_family":"chat","state":"loaded"}]}"#
@@ -256,12 +257,13 @@ final class ProviderModelMetadataTests: XCTestCase {
         XCTAssertEqual(result.models, [
             ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
         ])
+        XCTAssertEqual(transport.requestKeys, ["GET /provider/v1/models"])
     }
 
     func testFetchModelMetadataParsesTextDiffusionModel() async throws {
         let transport = FakeTransport(
             responses: [
-                "GET /api/v0/models": MockResponse(
+                "GET /provider/v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
                         #"{"object":"list","data":[{"id":"mlx-community/DiffusionGemma","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"loaded"}]}"#
@@ -281,7 +283,7 @@ final class ProviderModelMetadataTests: XCTestCase {
     func testFetchModelMetadataParsesUnsupportedModelReason() async throws {
         let transport = FakeTransport(
             responses: [
-                "GET /api/v0/models": MockResponse(
+                "GET /provider/v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
                         #"{"object":"list","data":[{"id":"mlx-community/DiffusionGemma","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"unsupported","unsupported_reason":"Unsupported by installed mlx-lm: diffusion_gemma"}]}"#
@@ -299,6 +301,82 @@ final class ProviderModelMetadataTests: XCTestCase {
             .unsupported(reason: "Unsupported by installed mlx-lm: diffusion_gemma")
         )
         XCTAssertFalse(result.models.first?.isSendableTextModel ?? true)
+    }
+
+    func testFetchModelMetadataFallsBackToLegacyV0ModelsWhenCanonicalRouteIs404() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 404,
+                    body: Data(#"{"error":"not found"}"#.utf8)
+                ),
+                "GET /api/v0/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"llm","generation_type":"text","model_family":"chat","state":"loaded"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+
+        XCTAssertEqual(result.models, [
+            ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+        ])
+        XCTAssertEqual(transport.requestKeys, ["GET /provider/v1/models", "GET /api/v0/models"])
+    }
+
+    func testFetchModelMetadataFallsBackToLegacyV0ModelsWhenCanonicalRouteIsUnavailable() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /api/v0/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-plan","type":"llm","generation_type":"text","model_family":"chat","state":"loaded"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+
+        XCTAssertEqual(result.models, [
+            ProviderModelMetadata(id: "mlx-plan", capability: .chatText, state: "loaded"),
+        ])
+        XCTAssertEqual(transport.requestKeys, ["GET /provider/v1/models", "GET /api/v0/models"])
+    }
+
+    func testFetchModelMetadataParsesNotInstalledReasonAsUnsupported() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-community/Devstral","type":"llm","generation_type":"text","model_family":"chat","state":"not_installed","reason":"Model is not installed","not_installed_reason":"Install this model before chatting"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+
+        XCTAssertEqual(
+            result.models,
+            [
+                ProviderModelMetadata(
+                    id: "mlx-community/Devstral",
+                    capability: .unsupported(reason: "Install this model before chatting"),
+                    state: "not_installed"
+                ),
+            ]
+        )
     }
 
     func testModelCatalogPreservesMlxAskDefaultAndBlocksUnsupportedSend() {
@@ -383,7 +461,7 @@ final class ProviderModelMetadataTests: XCTestCase {
                             .utf8
                     )
                 ),
-                "GET /api/v0/models": MockResponse(
+                "GET /provider/v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
                         #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-plan","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-fast","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"loaded"},{"id":"mlx-community/diffusiongemma-26B-A4B-it-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"unsupported","unsupported_reason":"Unsupported by installed mlx-lm runtime"}]}"#
@@ -476,6 +554,7 @@ extension FakeTransport {
                 key = streamingKey
             }
         }
+        requestKeys.append(key)
 
         guard let response = responses[key] else {
             throw URLError(.badServerResponse)

@@ -65,6 +65,13 @@ MLXDashboard may route aliases to role-specific upstream endpoints when configur
 
 ## Compatibility Routes
 
+MLXDashboard also exposes MLXDashboard-specific provider metadata routes:
+
+- `GET /provider/v1/models`
+- `GET /provider/v1/models/{model}`
+
+These are the canonical metadata and capability routes for MLXChat. They may include known non-runnable models so clients can show unavailable states, but `/v1/models` remains the runnable OpenAI-compatible allowlist.
+
 MLXDashboard also exposes Android Studio/Ollama-style compatibility routes:
 
 - `GET /api/v0/models`
@@ -78,23 +85,25 @@ MLXDashboard also exposes Android Studio/Ollama-style compatibility routes:
 
 Observed compatibility behaviour:
 
-- `/api/v0/models` returns model metadata with fields such as `id`, `object`, `type`, `publisher`, `compatibility_type`, `state`, and `max_context_length`.
+- `/provider/v1/models` returns model metadata with fields such as `id`, `object`, `type`, `publisher`, `compatibility_type`, `state`, and `max_context_length`.
+- `/api/v0/models` is a legacy alias for older local clients. MLXChat uses it only as a fallback when `/provider/v1/models` returns 404 or is unavailable.
 - `/api/tags` and `/api/ps` advertise the aliases and active model in Ollama-style response shapes.
 - `/api/version` returns version `0.0.0`.
 - `/api/chat` and `/api/generate` are translated to chat completions.
 
-MLXChat also understands optional `/api/v0/models` capability fields for text model selection:
+MLXChat understands these provider metadata fields for text model selection:
 
 - `generation_type: "text"` marks a model as producing text.
 - `model_family: "chat"` marks normal chat models.
 - `model_family: "diffusion_text"` marks text diffusion models that still return text through chat-completions-compatible routes.
 - `state: "unsupported"` plus `unsupported_reason` marks a listed model that should not be used for chat requests.
+- `state: "not_installed"` plus `not_installed_reason` marks a listed model that is known but unavailable in the local cache.
 
 These fields are compatibility guidance for MLXChat clients. They do not add image diffusion support; image generation requires a separate provider contract.
 
-MLXChat treats `GET /v1/models` as the runnable model allowlist. When `/api/v0/models` contains metadata for models that are not advertised by `/v1/models`, MLXChat ignores those extra rows in the sidebar and uses metadata only to label advertised models.
+MLXChat treats `GET /v1/models` as the runnable model allowlist. When `/provider/v1/models` or legacy `/api/v0/models` contains metadata for models that are not advertised by `/v1/models`, MLXChat ignores those extra rows in the sidebar and uses metadata only to label advertised models.
 
-Runnable text diffusion models should appear in `/v1/models`, be labelled as `generation_type: "text"` and `model_family: "diffusion_text"` in `/api/v0/models`, and respond through `/v1/chat/completions` with the same `choices[0].message.content` shape as normal chat models. MLXChat does not route text diffusion models to image-generation endpoints or render image payloads.
+Runnable text diffusion models should appear in `/v1/models`, be labelled as `generation_type: "text"` and `model_family: "diffusion_text"` in `/provider/v1/models`, and respond through `/v1/chat/completions` with the same `choices[0].message.content` shape as normal chat models. MLXChat does not route text diffusion models to image-generation endpoints or render image payloads.
 
 ## Path Normalisation
 

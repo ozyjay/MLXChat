@@ -19,7 +19,8 @@ The smoke tester should produce concise pass/fail output and include the request
 
 Add targeted probes for compatibility clients:
 
-- Android Studio-style discovery through `/api/v0/models`.
+- Canonical MLXDashboard metadata discovery through `/provider/v1/models`.
+- Legacy Android Studio-style discovery through `/api/v0/models`.
 - Ollama-style tags and process listing through `/api/tags` and `/api/ps`.
 - show metadata through `/api/show`.
 - translated generation through `/api/chat` and `/api/generate`.
@@ -32,7 +33,7 @@ Once smoke-test needs are clear, add a small reusable client wrapper around the 
 
 - base URL configuration defaulting to `http://127.0.0.1:8123`;
 - health and model listing helpers;
-- model capability metadata helpers using `/api/v0/models`;
+- model capability metadata helpers using `/provider/v1/models`, with legacy `/api/v0/models` fallback for older local providers;
 - chat-completion and responses helpers;
 - streaming support;
 - structured error reporting for connection failures, non-2xx responses, and malformed JSON.
