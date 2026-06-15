@@ -535,6 +535,40 @@ final class ProviderLogSanitizerTests: XCTestCase {
     }
 }
 
+final class MLXChatFileLoggerTests: XCTestCase {
+    func testFormatsLogLineWithTimestampLevelAndCategory() {
+        let date = Date(timeIntervalSince1970: 0)
+
+        XCTAssertEqual(
+            MLXChatFileLogger.formatLine(date: date, level: "notice", category: "provider", message: "Fetched models count=4"),
+            "1970-01-01T00:00:00Z notice [provider] Fetched models count=4"
+        )
+    }
+
+    func testAppendCreatesApplicationSupportLogFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "MLXChatFileLoggerTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        try MLXChatFileLogger.append(
+            level: "notice",
+            category: "chat",
+            message: "Send started model=mlx-fast",
+            applicationSupportDirectory: root,
+            date: Date(timeIntervalSince1970: 0)
+        )
+
+        let logURL = root
+            .appending(path: "logs", directoryHint: .isDirectory)
+            .appending(path: "mlxchat.log")
+        let contents = try String(contentsOf: logURL, encoding: .utf8)
+
+        XCTAssertEqual(contents, "1970-01-01T00:00:00Z notice [chat] Send started model=mlx-fast\n")
+    }
+}
+
 struct MockResponse {
     let statusCode: Int
     let body: Data

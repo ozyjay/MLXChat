@@ -46,7 +46,13 @@ The app:
 If MLXDashboard is not running, the app should show a disconnected state rather than crash.
 Image diffusion is not supported by MLXChat yet. Text diffusion models must be advertised by MLXDashboard in `GET /v1/models`, labelled with `model_family: "diffusion_text"` in canonical `GET /provider/v1/models` metadata, and returned as plain text chat-completion responses.
 
-The app and core provider client emit concise Unified Logging entries under the `MLXChat` subsystem. Use Console.app or:
+The app and core provider client emit concise logs to Application Support:
+
+```sh
+tail -f "$HOME/Library/Application Support/MLXChat/logs/mlxchat.log"
+```
+
+They also emit Unified Logging entries under the `MLXChat` subsystem. Use Console.app or:
 
 ```sh
 log stream --predicate 'subsystem == "MLXChat"'
