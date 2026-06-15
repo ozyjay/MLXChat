@@ -32,9 +32,12 @@ Once smoke-test needs are clear, add a small reusable client wrapper around the 
 
 - base URL configuration defaulting to `http://127.0.0.1:8123`;
 - health and model listing helpers;
+- model capability metadata helpers using `/api/v0/models`;
 - chat-completion and responses helpers;
 - streaming support;
 - structured error reporting for connection failures, non-2xx responses, and malformed JSON.
+
+Text diffusion models should be treated as text-generation models when provider metadata marks them as `model_family: "diffusion_text"`. Do not route them through image-generation APIs unless MLXDashboard later defines an image provider contract.
 
 Avoid adding broad SDK abstractions until at least one concrete MLXChat tool needs them.
 

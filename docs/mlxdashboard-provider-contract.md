@@ -83,6 +83,15 @@ Observed compatibility behaviour:
 - `/api/version` returns version `0.0.0`.
 - `/api/chat` and `/api/generate` are translated to chat completions.
 
+MLXChat also understands optional `/api/v0/models` capability fields for text model selection:
+
+- `generation_type: "text"` marks a model as producing text.
+- `model_family: "chat"` marks normal chat models.
+- `model_family: "diffusion_text"` marks text diffusion models that still return text through chat-completions-compatible routes.
+- `state: "unsupported"` plus `unsupported_reason` marks a listed model that should not be used for chat requests.
+
+These fields are compatibility guidance for MLXChat clients. They do not add image diffusion support; image generation requires a separate provider contract.
+
 ## Path Normalisation
 
 MLXDashboard normalises several client path variants before routing. Observed examples include:

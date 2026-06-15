@@ -92,6 +92,16 @@ public struct ProviderClient {
         return (modelNames, response.statusCode)
     }
 
+    public func fetchModelMetadata() async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
+        let response = try await request(path: "/api/v0/models", method: .get)
+        guard response.isSuccess else {
+            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+        }
+
+        let payload = try jsonDecoder.decode(ModelMetadataPayload.self, from: response.body)
+        return (payload.data.map(\.metadata), response.statusCode)
+    }
+
     public func chatCompletions(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
         let body = ChatCompletionPayload(
             model: model,
@@ -179,6 +189,46 @@ public struct ProviderClient {
 
     private struct ProviderModel: Decodable {
         let id: String
+    }
+
+    private struct ModelMetadataPayload: Decodable {
+        let data: [ProviderModelMetadataPayload]
+    }
+
+    private struct ProviderModelMetadataPayload: Decodable {
+        let id: String
+        let type: String?
+        let generationType: String?
+        let modelFamily: String?
+        let state: String?
+        let unsupportedReason: String?
+
+        var metadata: ProviderModelMetadata {
+            ProviderModelMetadata(
+                id: id,
+                capability: capability,
+                state: state
+            )
+        }
+
+        private var capability: ProviderModelCapability {
+            if state == "unsupported" {
+                return .unsupported(reason: unsupportedReason ?? "Unsupported by provider")
+            }
+            if generationType == "text", modelFamily == "diffusion_text" {
+                return .diffusionText
+            }
+            return .chatText
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case type
+            case generationType = "generation_type"
+            case modelFamily = "model_family"
+            case state
+            case unsupportedReason = "unsupported_reason"
+        }
     }
 
     private struct ChatCompletionPayload: Encodable {

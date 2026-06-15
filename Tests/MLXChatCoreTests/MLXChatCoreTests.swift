@@ -208,6 +208,100 @@ final class ProviderChatCompletionTests: XCTestCase {
     }
 }
 
+final class ProviderModelMetadataTests: XCTestCase {
+    func testFetchModelMetadataParsesNormalChatTextModel() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /api/v0/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"llm","generation_type":"text","model_family":"chat","state":"loaded"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+
+        XCTAssertEqual(result.statusCode, 200)
+        XCTAssertEqual(result.models, [
+            ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+        ])
+    }
+
+    func testFetchModelMetadataParsesTextDiffusionModel() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /api/v0/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-community/DiffusionGemma","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"loaded"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+
+        XCTAssertEqual(result.models.first?.capability, .diffusionText)
+        XCTAssertTrue(result.models.first?.isSendableTextModel == true)
+    }
+
+    func testFetchModelMetadataParsesUnsupportedModelReason() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /api/v0/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-community/DiffusionGemma","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"unsupported","unsupported_reason":"Unsupported by installed mlx-lm: diffusion_gemma"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+
+        XCTAssertEqual(
+            result.models.first?.capability,
+            .unsupported(reason: "Unsupported by installed mlx-lm: diffusion_gemma")
+        )
+        XCTAssertFalse(result.models.first?.isSendableTextModel ?? true)
+    }
+
+    func testModelCatalogPreservesMlxAskDefaultAndBlocksUnsupportedSend() {
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(id: "mlx-community/DiffusionGemma", capability: .diffusionText, state: "loaded"),
+                ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+                ProviderModelMetadata(
+                    id: "mlx-community/Unsupported",
+                    capability: .unsupported(reason: "Unsupported by installed runtime"),
+                    state: "unsupported"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(catalog.defaultSelection(persistedSelection: ""), "mlx-ask")
+        XCTAssertEqual(catalog.defaultSelection(persistedSelection: "mlx-community/DiffusionGemma"), "mlx-community/DiffusionGemma")
+        XCTAssertTrue(catalog.canSend(with: "mlx-ask"))
+        XCTAssertTrue(catalog.canSend(with: "mlx-community/DiffusionGemma"))
+        XCTAssertFalse(catalog.canSend(with: "mlx-community/Unsupported"))
+    }
+
+    func testModelCatalogFallsBackToV1ModelsAsChatText() {
+        let catalog = ProviderModelCatalog(modelIDs: ["mlx-plan", "mlx-community/Tiny"])
+
+        XCTAssertEqual(catalog.models.map(\.capability), [.chatText, .chatText])
+        XCTAssertEqual(catalog.defaultSelection(persistedSelection: ""), "mlx-plan")
+    }
+}
+
 final class LocalProviderURLValidatorTests: XCTestCase {
     func testAcceptsLocalhostProviderURLs() {
         XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123"))

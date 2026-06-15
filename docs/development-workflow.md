@@ -47,6 +47,12 @@ For future executable tools:
 - run smoke tests against a live MLXDashboard provider when available;
 - include failure cases for connection refused, non-2xx responses, missing active model, invalid JSON, and interrupted streams.
 
+For SwiftUI app verification:
+
+- after launching from Terminal, bring the app window to the front and confirm it is not hidden behind VS Code or the launching terminal;
+- click into an editable field, type a short value, and confirm the characters appear in the app rather than in the terminal session that started it;
+- verify at least one primary interaction path with real keyboard focus, such as editing the provider URL or typing in the chat composer.
+
 ## Localhost Safety
 
 MLXChat clients should default to local-only provider access. Do not add docs, defaults, flags, or examples that expose MLXDashboard or `mlx_lm.server` beyond localhost unless MLXDashboard first has a deliberate secured remote-access mode.

@@ -1,8 +1,11 @@
+import AppKit
 import MLXChatCore
 import SwiftUI
 
 @main
 struct MLXChatApp: App {
+    @NSApplicationDelegateAdaptor(AppLaunchCoordinator.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -16,19 +19,23 @@ struct ContentView: View {
     @AppStorage("MLXChat.baseURL") private var storedBaseURL = "http://127.0.0.1:8123"
     @AppStorage("MLXChat.selectedModel") private var storedSelectedModel = ""
     @StateObject private var viewModel = ChatAppViewModel()
+    @FocusState private var focusedField: FocusedAppField?
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(viewModel: viewModel)
+            SidebarView(viewModel: viewModel, focusedField: $focusedField)
                 .frame(width: 280)
                 .background(Color(nsColor: .controlBackgroundColor))
 
             Divider()
 
-            ChatPaneView(viewModel: viewModel)
+            ChatPaneView(viewModel: viewModel, focusedField: $focusedField)
         }
+        .background(WindowActivationView())
         .onAppear {
             viewModel.configure(baseURLText: storedBaseURL, selectedModel: storedSelectedModel)
+            AppWindowActivator.activateAfterWindowCreation()
+            focusComposerAfterLaunch()
         }
         .onChange(of: viewModel.baseURLText) { value in
             storedBaseURL = value
@@ -37,10 +44,17 @@ struct ContentView: View {
             storedSelectedModel = value
         }
     }
+
+    private func focusComposerAfterLaunch() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            focusedField = .composer
+        }
+    }
 }
 
 struct SidebarView: View {
     @ObservedObject var viewModel: ChatAppViewModel
+    let focusedField: FocusState<FocusedAppField?>.Binding
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -54,6 +68,7 @@ struct SidebarView: View {
 
                 TextField("Base URL", text: $viewModel.baseURLText)
                     .textFieldStyle(.roundedBorder)
+                    .focused(focusedField, equals: .providerURL)
 
                 HStack(spacing: 8) {
                     HealthBadge(state: viewModel.healthState)
@@ -86,12 +101,12 @@ struct SidebarView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 6) {
-                            ForEach(viewModel.models, id: \.self) { model in
+                            ForEach(viewModel.models) { model in
                                 ModelRow(
                                     model: model,
-                                    isSelected: model == viewModel.selectedModel
+                                    isSelected: model.id == viewModel.selectedModel
                                 ) {
-                                    viewModel.selectedModel = model
+                                    viewModel.selectedModel = model.id
                                 }
                             }
                         }
@@ -106,7 +121,7 @@ struct SidebarView: View {
 }
 
 struct ModelRow: View {
-    let model: String
+    let model: ProviderModelMetadata
     let isSelected: Bool
     let action: () -> Void
 
@@ -116,10 +131,14 @@ struct ModelRow: View {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
 
-                Text(model)
-                    .font(.callout)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(model.id)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    CapabilityBadge(capability: model.capability)
+                }
 
                 Spacer(minLength: 0)
             }
@@ -130,6 +149,35 @@ struct ModelRow: View {
         .buttonStyle(.plain)
         .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+struct CapabilityBadge: View {
+    let capability: ProviderModelCapability
+
+    var body: some View {
+        Text(capability.displayName)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(foregroundColour)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(backgroundColour)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private var foregroundColour: Color {
+        switch capability {
+        case .chatText:
+            return .blue
+        case .diffusionText:
+            return .purple
+        case .unsupported:
+            return .orange
+        }
+    }
+
+    private var backgroundColour: Color {
+        foregroundColour.opacity(0.12)
     }
 }
 
@@ -155,6 +203,7 @@ struct HealthBadge: View {
 
 struct ChatPaneView: View {
     @ObservedObject var viewModel: ChatAppViewModel
+    let focusedField: FocusState<FocusedAppField?>.Binding
 
     var body: some View {
         VStack(spacing: 0) {
@@ -164,6 +213,11 @@ struct ChatPaneView: View {
 
             TranscriptView(messages: viewModel.messages, isSending: viewModel.isSending)
 
+            if let modelNotice = viewModel.selectedModelNotice {
+                Divider()
+                ModelNoticeBanner(message: modelNotice)
+            }
+
             if let errorMessage = viewModel.errorMessage {
                 Divider()
                 ErrorBanner(message: errorMessage)
@@ -171,7 +225,7 @@ struct ChatPaneView: View {
 
             Divider()
 
-            ComposerView(viewModel: viewModel)
+            ComposerView(viewModel: viewModel, focusedField: focusedField)
         }
         .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -187,7 +241,7 @@ struct ChatHeaderView: View {
                     .font(.headline)
                     .lineLimit(1)
 
-                Text(viewModel.baseURLText)
+                Text(viewModel.selectedModelSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -285,6 +339,7 @@ struct ChatBubble: View {
 
 struct ComposerView: View {
     @ObservedObject var viewModel: ChatAppViewModel
+    let focusedField: FocusState<FocusedAppField?>.Binding
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
@@ -292,6 +347,7 @@ struct ComposerView: View {
                 .lineLimit(1...5)
                 .textFieldStyle(.roundedBorder)
                 .disabled(viewModel.isSending)
+                .focused(focusedField, equals: .composer)
 
             Button {
                 Task {
@@ -327,11 +383,31 @@ struct ErrorBanner: View {
     }
 }
 
+struct ModelNoticeBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.blue)
+
+            Text(message)
+                .font(.callout)
+                .lineLimit(3)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(Color.blue.opacity(0.1))
+    }
+}
+
 @MainActor
 final class ChatAppViewModel: ObservableObject {
     @Published var baseURLText = "http://127.0.0.1:8123"
     @Published var healthState: ProviderHealthState = .unknown
-    @Published var models: [String] = []
+    @Published var models: [ProviderModelMetadata] = []
     @Published var selectedModel = ""
     @Published var messages: [ChatDisplayMessage] = []
     @Published var draftMessage = ""
@@ -341,11 +417,34 @@ final class ChatAppViewModel: ObservableObject {
 
     private var hasConfigured = false
 
+    private var catalog: ProviderModelCatalog {
+        ProviderModelCatalog(models: models)
+    }
+
+    var selectedModelSubtitle: String {
+        guard let model = catalog.model(id: selectedModel) else {
+            return baseURLText
+        }
+        return "\(model.capability.displayName) - \(baseURLText)"
+    }
+
+    var selectedModelNotice: String? {
+        guard let model = catalog.model(id: selectedModel) else { return nil }
+        if let reason = model.capability.unsupportedReason {
+            return "This model cannot be used for chat: \(reason)"
+        }
+        if model.capability == .diffusionText {
+            return "Text diffusion model selected. Responses are still text and use the same chat transcript."
+        }
+        return nil
+    }
+
     var canSend: Bool {
         !isSending
             && !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !selectedModel.isEmpty
             && LocalProviderURLValidator.providerURL(from: baseURLText) != nil
+            && catalog.canSend(with: selectedModel)
     }
 
     func configure(baseURLText: String, selectedModel: String) {
@@ -376,11 +475,9 @@ final class ChatAppViewModel: ObservableObject {
             let health = try await client.health()
             healthState = health.isSuccess ? .healthy : .disconnected
 
-            let fetched = try await client.fetchModels().models
-            models = fetched
-            if !models.contains(selectedModel) {
-                selectedModel = models.contains("mlx-ask") ? "mlx-ask" : (models.first ?? "")
-            }
+            let catalog = try await fetchModelCatalog(using: client)
+            models = catalog.models
+            selectedModel = catalog.defaultSelection(persistedSelection: selectedModel)
         } catch {
             healthState = .disconnected
             models = []
@@ -399,6 +496,11 @@ final class ChatAppViewModel: ObservableObject {
         }
         guard !selectedModel.isEmpty else {
             errorMessage = "Select a model."
+            return
+        }
+        guard catalog.canSend(with: selectedModel) else {
+            errorMessage = catalog.model(id: selectedModel)?.capability.unsupportedReason
+                ?? "Selected model cannot be used for text chat."
             return
         }
 
@@ -424,12 +526,71 @@ final class ChatAppViewModel: ObservableObject {
         messages = []
         errorMessage = nil
     }
+
+    private func fetchModelCatalog(using client: ProviderClient) async throws -> ProviderModelCatalog {
+        do {
+            let metadata = try await client.fetchModelMetadata().models
+            return ProviderModelCatalog(models: metadata)
+        } catch {
+            let models = try await client.fetchModels().models
+            return ProviderModelCatalog(modelIDs: models)
+        }
+    }
 }
 
 struct ChatDisplayMessage: Equatable, Identifiable {
     let id = UUID()
     let role: String
     let content: String
+}
+
+enum FocusedAppField: Hashable {
+    case providerURL
+    case composer
+}
+
+final class AppLaunchCoordinator: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        AppWindowActivator.activateAfterWindowCreation()
+    }
+}
+
+enum AppWindowActivator {
+    static func activateAfterWindowCreation() {
+        DispatchQueue.main.async {
+            activate(window: NSApp.keyWindow ?? NSApp.windows.first)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            activate(window: NSApp.keyWindow ?? NSApp.windows.first)
+        }
+    }
+
+    static func activate(window: NSWindow?) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard let window else { return }
+        window.level = .normal
+        window.deminiaturize(nil)
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+    }
+}
+
+struct WindowActivationView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        ActivatingView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class ActivatingView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            AppWindowActivator.activate(window: window)
+        }
+    }
 }
 
 enum ProviderHealthState {

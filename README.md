@@ -10,15 +10,54 @@ From this repository:
 
 ```sh
 swift test
-swift run mlxchat --help
 swift run mlxchat
 swift run mlxchat-app
 ```
 
-By default, the CLI targets:
+Both tools default to:
 
 ```text
 http://127.0.0.1:8123
+```
+
+Start MLXDashboard's provider server first, then use either the CLI smoke tester or the app.
+
+## Tools
+
+### SwiftUI Chat App
+
+Run the macOS SwiftUI front-end:
+
+```sh
+swift run mlxchat-app
+```
+
+The app:
+
+- checks provider health with `GET /health`;
+- lists models with `GET /v1/models`;
+- reads richer capability metadata from `GET /api/v0/models` when available;
+- selects `mlx-ask` by default when it is advertised, otherwise the first model;
+- sends normal chat and text diffusion chat requests to `POST /v1/chat/completions`;
+- labels normal chat, text diffusion, and unsupported models in the sidebar;
+- persists the last local base URL and selected model;
+- accepts only localhost provider URLs such as `http://127.0.0.1:8123`, `http://localhost:8123`, or `http://[::1]:8123`.
+
+If MLXDashboard is not running, the app should show a disconnected state rather than crash.
+Image diffusion is not supported by MLXChat yet; text diffusion models are treated as text-generation models.
+
+### CLI Smoke Tester
+
+Run the command-line smoke tester:
+
+```sh
+swift run mlxchat
+```
+
+Show CLI options:
+
+```sh
+swift run mlxchat --help
 ```
 
 Use `--base-url` only for another local MLXDashboard provider endpoint:

@@ -20,6 +20,7 @@
 - Default clients to `http://127.0.0.1:8123` and localhost-only access.
 - Do not encourage exposing MLXDashboard, its provider server, or `mlx_lm.server` beyond localhost unless a deliberate secured remote-access design exists in MLXDashboard.
 - Document observed MLXDashboard behaviour as current compatibility guidance, not as a permanent external API guarantee.
+- For SwiftUI app work, do not treat "the process launched" as enough verification. When running the app manually, make sure the app window is visible in front of VS Code or any terminal that started it, and confirm text fields/composer controls actually receive keyboard input. Key presses can otherwise continue going to the launching terminal window, which makes the app look broken even when it is running.
 
 ## Documentation Style
 
