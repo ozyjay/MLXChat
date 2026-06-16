@@ -614,19 +614,26 @@ final class ChatAppViewModel: ObservableObject {
             return
         }
 
-        let userMessage = ChatDisplayMessage(role: "user", content: prompt)
-        messages.append(userMessage)
-        draftMessage = ""
         errorMessage = nil
         isSending = true
 
+        let originalModel = selectedModel
+        let modelForSend = await resolveModelForSend(prompt: prompt, baseURL: baseURL)
+        if modelForSend != selectedModel {
+            selectedModel = modelForSend
+        }
+
+        let userMessage = ChatDisplayMessage(role: "user", content: prompt)
+        messages.append(userMessage)
+        draftMessage = ""
+
         let client = ProviderClient(baseURL: baseURL, timeout: 60)
         do {
-            let capability = catalog.model(id: selectedModel)?.capability.displayName ?? "Unknown"
-            Self.chatLogger.notice("Send started model=\(self.selectedModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
-            logChatNotice("Send started model=\(self.selectedModel) capability=\(capability) transcriptMessages=\(self.messages.count) promptCharacters=\(prompt.count)")
+            let capability = catalog.model(id: modelForSend)?.capability.displayName ?? "Unknown"
+            Self.chatLogger.notice("Send started model=\(modelForSend, privacy: .public) originalModel=\(originalModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
+            logChatNotice("Send started model=\(modelForSend) originalModel=\(originalModel) capability=\(capability) transcriptMessages=\(self.messages.count) promptCharacters=\(prompt.count)")
             let transcript = messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) }
-            let result = try await client.completeChat(model: selectedModel, messages: transcript)
+            let result = try await client.completeChat(model: modelForSend, messages: transcript)
             messages.append(ChatDisplayMessage(role: "assistant", content: result.assistantText))
             Self.chatLogger.notice("Send finished model=\(result.model, privacy: .public) status=\(result.statusCode, privacy: .public) replyCharacters=\(result.assistantText.count, privacy: .public)")
             logChatNotice("Send finished model=\(result.model) status=\(result.statusCode) replyCharacters=\(result.assistantText.count)")
@@ -637,6 +644,44 @@ final class ChatAppViewModel: ObservableObject {
         }
 
         isSending = false
+    }
+
+    private func resolveModelForSend(prompt: String, baseURL: URL) async -> String {
+        let adviceClient = ProviderClient(baseURL: baseURL, timeout: 1.5)
+        return await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: selectedModel,
+            latestPrompt: prompt,
+            catalog: catalog,
+            baseURL: baseURL,
+            adviceProvider: { input, selectedModel in
+                try await adviceClient.fetchModeAdvice(input: input, selectedModel: selectedModel)
+            },
+            userDecision: { prompt in
+                self.confirmModeSwitch(prompt)
+            }
+        )
+    }
+
+    private func confirmModeSwitch(_ prompt: ModeAdviceSwitchPrompt) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Switch modes?"
+
+        var details = [
+            "Current model: \(prompt.currentModel)",
+            "Suggested mode: \(prompt.suggestedMode)",
+        ]
+        if let confidence = prompt.confidencePercent {
+            details.append("Confidence: \(confidence)%")
+        }
+        if let reason = prompt.reason, !reason.isEmpty {
+            details.append("Reason: \(reason)")
+        }
+        alert.informativeText = details.joined(separator: "\n")
+        alert.addButton(withTitle: "Use \(prompt.suggestedModel)")
+        alert.addButton(withTitle: "Keep \(prompt.currentModel)")
+
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func clearTranscript() {

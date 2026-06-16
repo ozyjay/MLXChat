@@ -236,6 +236,273 @@ final class ProviderChatCompletionTests: XCTestCase {
     }
 }
 
+final class ProviderModeAdviceTests: XCTestCase {
+    func testFetchModeAdviceSendsLatestPromptAndSelectedModel() async throws {
+        let transport = RecordingTransport(
+            response: MockResponse(
+                statusCode: 200,
+                body: Data(
+                    #"{"suggested_mode":"plan","confidence":0.86,"should_suggest_switch":true,"current_mode":"ask","reason":"The prompt asks for implementation planning."}"#
+                        .utf8
+                )
+            )
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let advice = try await client.fetchModeAdvice(
+            input: "help me plan this feature",
+            selectedModel: "mlx-ask"
+        )
+
+        XCTAssertEqual(advice.suggestedMode, "plan")
+        XCTAssertEqual(advice.confidence, 0.86)
+        XCTAssertEqual(advice.shouldSuggestSwitch, true)
+        XCTAssertEqual(advice.currentMode, "ask")
+        XCTAssertEqual(advice.reason, "The prompt asks for implementation planning.")
+        XCTAssertEqual(transport.requestPaths, ["/provider/v1/mode-advice"])
+        XCTAssertEqual(transport.requestBodies.count, 1)
+        XCTAssertTrue(transport.requestBodies[0].contains(#""input":"help me plan this feature""#))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""selected_model":"mlx-ask""#))
+        XCTAssertFalse(transport.requestBodies[0].contains("older transcript text"))
+    }
+
+    func testModeAdviceIsRequestedBeforeChatAndAcceptedPlanAliasIsSent() async throws {
+        let transport = SequencedRecordingTransport(
+            responses: [
+                MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"suggested_mode":"plan","confidence":0.86,"should_suggest_switch":true,"current_mode":"ask","reason":"The prompt asks for implementation planning."}"#
+                            .utf8
+                    )
+                ),
+                MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"id":"chat","model":"mlx-plan","choices":[{"index":0,"message":{"role":"assistant","content":"planned"}}]}"#.utf8)
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+        let catalog = mlxModeAdviceCatalog()
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-ask",
+            latestPrompt: "help me plan this feature",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { input, selectedModel in
+                try await client.fetchModeAdvice(input: input, selectedModel: selectedModel)
+            },
+            userDecision: { _ in true }
+        )
+        _ = try await client.completeChat(
+            model: modelID,
+            messages: [
+                ChatTranscriptMessage(role: "user", content: "older transcript text"),
+                ChatTranscriptMessage(role: "user", content: "help me plan this feature"),
+            ]
+        )
+
+        XCTAssertEqual(transport.requestPaths, ["/provider/v1/mode-advice", "/v1/chat/completions"])
+        XCTAssertTrue(transport.requestBodies[0].contains(#""input":"help me plan this feature""#))
+        XCTAssertFalse(transport.requestBodies[0].contains("older transcript text"))
+        XCTAssertTrue(transport.requestBodies[1].contains(#""model":"mlx-plan""#))
+        XCTAssertFalse(transport.requestBodies[1].contains("mlx-community"))
+    }
+
+    func testHighConfidencePlanAdviceBuildsSwitchPromptAndAcceptingUsesPlanAlias() async throws {
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(
+                    id: "mlx-ask",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Ask",
+                    role: "ask",
+                    compatibilityType: "mlx"
+                ),
+                ProviderModelMetadata(id: "mlx-plan", capability: .chatText, state: "loaded", role: "plan"),
+            ]
+        )
+        var prompts: [ModeAdviceSwitchPrompt] = []
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-ask",
+            latestPrompt: "help me plan this feature",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in
+                ProviderModeAdvice(
+                    suggestedMode: "plan",
+                    confidence: 0.86,
+                    shouldSuggestSwitch: true,
+                    currentMode: "ask",
+                    reason: "The prompt asks for implementation planning."
+                )
+            },
+            userDecision: { prompt in
+                prompts.append(prompt)
+                return true
+            }
+        )
+
+        XCTAssertEqual(modelID, "mlx-plan")
+        XCTAssertEqual(prompts.count, 1)
+        XCTAssertEqual(prompts.first?.currentModel, "mlx-ask")
+        XCTAssertEqual(prompts.first?.suggestedMode, "plan")
+        XCTAssertEqual(prompts.first?.suggestedModel, "mlx-plan")
+        XCTAssertEqual(prompts.first?.confidencePercent, 86)
+        XCTAssertEqual(prompts.first?.reason, "The prompt asks for implementation planning.")
+    }
+
+    func testDecliningModeAdviceUsesOriginalAlias() async throws {
+        let catalog = mlxModeAdviceCatalog()
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-ask",
+            latestPrompt: "help me plan this feature",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in
+                ProviderModeAdvice(
+                    suggestedMode: "plan",
+                    confidence: 0.9,
+                    shouldSuggestSwitch: true,
+                    currentMode: "ask",
+                    reason: "Planning request."
+                )
+            },
+            userDecision: { _ in false }
+        )
+
+        XCTAssertEqual(modelID, "mlx-ask")
+    }
+
+    func testUnknownAdviceUsesOriginalAliasWithoutPrompting() async throws {
+        let catalog = mlxModeAdviceCatalog()
+        var didPrompt = false
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-ask",
+            latestPrompt: "hello",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in
+                ProviderModeAdvice(
+                    suggestedMode: "unknown",
+                    confidence: 0.2,
+                    shouldSuggestSwitch: true,
+                    currentMode: "ask",
+                    reason: "No clear mode."
+                )
+            },
+            userDecision: { _ in
+                didPrompt = true
+                return true
+            }
+        )
+
+        XCTAssertEqual(modelID, "mlx-ask")
+        XCTAssertFalse(didPrompt)
+    }
+
+    func testFailedAdviceUsesOriginalAliasWithoutPrompting() async throws {
+        let catalog = mlxModeAdviceCatalog()
+        var didPrompt = false
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-ask",
+            latestPrompt: "help me plan",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in throw URLError(.timedOut) },
+            userDecision: { _ in
+                didPrompt = true
+                return true
+            }
+        )
+
+        XCTAssertEqual(modelID, "mlx-ask")
+        XCTAssertFalse(didPrompt)
+    }
+
+    func testGenericOpenAIProvidersDoNotRequestModeAdvice() async throws {
+        let catalog = ProviderModelCatalog(
+            models: [ProviderModelMetadata(id: "gpt-4.1-mini", capability: .chatText)]
+        )
+        var didRequestAdvice = false
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "gpt-4.1-mini",
+            latestPrompt: "help me plan",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:9000")!,
+            adviceProvider: { _, _ in
+                didRequestAdvice = true
+                return ProviderModeAdvice(suggestedMode: "plan", confidence: 1, shouldSuggestSwitch: true, currentMode: nil, reason: nil)
+            },
+            userDecision: { _ in true }
+        )
+
+        XCTAssertEqual(modelID, "gpt-4.1-mini")
+        XCTAssertFalse(didRequestAdvice)
+    }
+
+    func testAdviceSwitchStillSendsAliasNotResolvedModel() async throws {
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(
+                    id: "mlx-ask",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Ask",
+                    role: "ask",
+                    compatibilityType: "mlx"
+                ),
+                ProviderModelMetadata(
+                    id: "mlx-coding",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
+                    role: "coding",
+                    compatibilityType: "mlx"
+                ),
+            ]
+        )
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-ask",
+            latestPrompt: "implement this",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in
+                ProviderModeAdvice(suggestedMode: "coding", confidence: 0.91, shouldSuggestSwitch: true, currentMode: "ask", reason: "Coding request.")
+            },
+            userDecision: { _ in true }
+        )
+
+        XCTAssertEqual(modelID, "mlx-coding")
+        XCTAssertNotEqual(modelID, "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit")
+    }
+
+    private func mlxModeAdviceCatalog() -> ProviderModelCatalog {
+        ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(
+                    id: "mlx-ask",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Ask",
+                    role: "ask",
+                    compatibilityType: "mlx"
+                ),
+                ProviderModelMetadata(id: "mlx-plan", capability: .chatText, state: "loaded", role: "plan"),
+                ProviderModelMetadata(id: "mlx-coding", capability: .chatText, state: "loaded", role: "coding"),
+            ]
+        )
+    }
+}
+
 final class ProviderModelMetadataTests: XCTestCase {
     func testFetchModelListParsesStandardOpenAIModelObjects() async throws {
         let transport = FakeTransport(
@@ -263,7 +530,7 @@ final class ProviderModelMetadataTests: XCTestCase {
                 "GET /v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
-                        #"{"object":"list","data":[{"id":"mlx-plan","object":"model","resolved_model":"mlx-community/Qwen3.6-35B-A3B-4bit","role":"plan","owned_by":"mlx-community","publisher":"mlx-community","arch":"qwen","quantization":"4bit","generation_type":"text","model_family":"chat","state":"loaded","max_context_length":32768,"future_field":"ignored"}]}"#
+                        #"{"object":"list","data":[{"id":"mlx-plan","object":"model","resolved_model":"mlx-community/Qwen3.6-35B-A3B-4bit","role":"plan","owned_by":"mlx-community","publisher":"mlx-community","arch":"qwen","quantization":"4bit","compatibility_type":"mlx","generation_type":"text","model_family":"chat","state":"loaded","max_context_length":32768,"future_field":"ignored"}]}"#
                             .utf8
                     )
                 ),
@@ -281,6 +548,7 @@ final class ProviderModelMetadataTests: XCTestCase {
         XCTAssertEqual(model.publisher, "mlx-community")
         XCTAssertEqual(model.arch, "qwen")
         XCTAssertEqual(model.quantization, "4bit")
+        XCTAssertEqual(model.compatibilityType, "mlx")
         XCTAssertEqual(model.generationType, "text")
         XCTAssertEqual(model.modelFamily, "chat")
         XCTAssertEqual(model.state, "loaded")
@@ -725,6 +993,39 @@ final class RecordingTransport: HTTPTransport {
         requestMethods.append(request.httpMethod ?? "GET")
         requestPaths.append(request.url?.path ?? "")
         requestBodies.append(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "")
+
+        let httpResponse = HTTPURLResponse(
+            url: request.url!,
+            statusCode: response.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+
+        return (response.body, httpResponse)
+    }
+}
+
+final class SequencedRecordingTransport: HTTPTransport {
+    private let responses: [MockResponse]
+    private var index = 0
+    private(set) var requestMethods: [String] = []
+    private(set) var requestPaths: [String] = []
+    private(set) var requestBodies: [String] = []
+
+    init(responses: [MockResponse]) {
+        self.responses = responses
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        requestMethods.append(request.httpMethod ?? "GET")
+        requestPaths.append(request.url?.path ?? "")
+        requestBodies.append(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "")
+
+        guard index < responses.count else {
+            throw URLError(.badServerResponse)
+        }
+        let response = responses[index]
+        index += 1
 
         let httpResponse = HTTPURLResponse(
             url: request.url!,

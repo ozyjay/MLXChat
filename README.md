@@ -14,6 +14,17 @@ swift run mlxchat
 swift run mlxchat-app
 ```
 
+Or use the project scripts:
+
+```sh
+./scripts/build.sh
+./scripts/run.sh cli --help
+./scripts/run.sh app
+./scripts/install.sh
+```
+
+`scripts/install.sh` builds release binaries and installs `mlxchat` and `mlxchat-app` to `$HOME/.local/bin` by default. Set `PREFIX=/path/to/prefix` or `BIN_DIR=/path/to/bin` to choose another user-local install location.
+
 Both tools default to:
 
 ```text

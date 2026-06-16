@@ -45,6 +45,7 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
     public let quantization: String?
     public let generationType: String?
     public let modelFamily: String?
+    public let compatibilityType: String?
     public let maxContextLength: Int?
 
     public var isSendableTextModel: Bool {
@@ -79,6 +80,7 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
         quantization: String? = nil,
         generationType: String? = nil,
         modelFamily: String? = nil,
+        compatibilityType: String? = nil,
         maxContextLength: Int? = nil
     ) {
         self.id = id
@@ -92,6 +94,7 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
         self.quantization = quantization
         self.generationType = generationType
         self.modelFamily = modelFamily
+        self.compatibilityType = compatibilityType
         self.maxContextLength = maxContextLength
     }
 
@@ -108,6 +111,7 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
             quantization: other.quantization ?? quantization,
             generationType: other.generationType ?? generationType,
             modelFamily: other.modelFamily ?? modelFamily,
+            compatibilityType: other.compatibilityType ?? compatibilityType,
             maxContextLength: other.maxContextLength ?? maxContextLength
         )
     }
@@ -164,5 +168,22 @@ public struct ProviderModelCatalog: Equatable, Sendable {
             return "mlx-ask"
         }
         return models.first { $0.isSendableTextModel }?.id ?? ""
+    }
+
+    public func supportsModeAdvice(baseURL: URL) -> Bool {
+        let isDefaultMLXDashboardURL = baseURL.scheme == "http"
+            && (baseURL.host == "127.0.0.1" || baseURL.host == "localhost" || baseURL.host == "::1")
+            && (baseURL.port ?? 80) == 8123
+        if isDefaultMLXDashboardURL {
+            return true
+        }
+
+        let modeAliases = Set(["mlx-ask", "mlx-plan", "mlx-coding"])
+        return models.contains { model in
+            modeAliases.contains(model.id)
+                && (model.role != nil
+                    || model.resolvedModel != nil
+                    || model.compatibilityType == "mlx")
+        }
     }
 }

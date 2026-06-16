@@ -175,6 +175,15 @@ public struct ProviderClient {
         )
     }
 
+    public func fetchModeAdvice(input: String, selectedModel: String) async throws -> ProviderModeAdvice {
+        let body = ModeAdviceRequestPayload(input: input, selectedModel: selectedModel)
+        let response = try await request(path: "/provider/v1/mode-advice", method: .post, body: body)
+        guard response.isSuccess else {
+            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+        }
+        return try jsonDecoder.decode(ProviderModeAdvice.self, from: response.body)
+    }
+
     public func responses(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
         let body = ResponsesPayload(
             model: model,
@@ -266,6 +275,7 @@ public struct ProviderClient {
         let quantization: String?
         let generationType: String?
         let modelFamily: String?
+        let compatibilityType: String?
         let state: String?
         let maxContextLength: Int?
 
@@ -282,6 +292,7 @@ public struct ProviderClient {
                 quantization: quantization,
                 generationType: generationType,
                 modelFamily: modelFamily,
+                compatibilityType: compatibilityType,
                 maxContextLength: maxContextLength
             )
         }
@@ -309,6 +320,7 @@ public struct ProviderClient {
             case quantization
             case generationType = "generation_type"
             case modelFamily = "model_family"
+            case compatibilityType = "compatibility_type"
             case state
             case maxContextLength = "max_context_length"
         }
@@ -329,6 +341,7 @@ public struct ProviderClient {
         let quantization: String?
         let generationType: String?
         let modelFamily: String?
+        let compatibilityType: String?
         let state: String?
         let maxContextLength: Int?
         let reason: String?
@@ -348,6 +361,7 @@ public struct ProviderClient {
                 quantization: quantization,
                 generationType: generationType,
                 modelFamily: modelFamily,
+                compatibilityType: compatibilityType,
                 maxContextLength: maxContextLength
             )
         }
@@ -376,6 +390,7 @@ public struct ProviderClient {
             case quantization
             case generationType = "generation_type"
             case modelFamily = "model_family"
+            case compatibilityType = "compatibility_type"
             case state
             case maxContextLength = "max_context_length"
             case reason
@@ -388,6 +403,16 @@ public struct ProviderClient {
         let model: String
         let messages: [ChatTranscriptMessage]
         let stream: Bool
+    }
+
+    private struct ModeAdviceRequestPayload: Encodable {
+        let input: String
+        let selectedModel: String
+
+        private enum CodingKeys: String, CodingKey {
+            case input
+            case selectedModel = "selected_model"
+        }
     }
 
     private struct ChatCompletionResponsePayload: Decodable {
