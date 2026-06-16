@@ -237,6 +237,92 @@ final class ProviderChatCompletionTests: XCTestCase {
 }
 
 final class ProviderModelMetadataTests: XCTestCase {
+    func testFetchModelListParsesStandardOpenAIModelObjects() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"object":"list","data":[{"id":"mlx-ask","object":"model"},{"id":"mlx-plan","object":"model"}]}"#.utf8)
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelList()
+
+        XCTAssertEqual(result.statusCode, 200)
+        XCTAssertEqual(result.models, [
+            ProviderModelMetadata(id: "mlx-ask", capability: .chatText),
+            ProviderModelMetadata(id: "mlx-plan", capability: .chatText),
+        ])
+    }
+
+    func testFetchModelListParsesMLXDashboardAliasMetadata() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-plan","object":"model","resolved_model":"mlx-community/Qwen3.6-35B-A3B-4bit","role":"plan","owned_by":"mlx-community","publisher":"mlx-community","arch":"qwen","quantization":"4bit","generation_type":"text","model_family":"chat","state":"loaded","max_context_length":32768,"future_field":"ignored"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelList()
+        let model = try XCTUnwrap(result.models.first)
+
+        XCTAssertEqual(model.id, "mlx-plan")
+        XCTAssertEqual(model.resolvedModel, "mlx-community/Qwen3.6-35B-A3B-4bit")
+        XCTAssertEqual(model.role, "plan")
+        XCTAssertEqual(model.ownedBy, "mlx-community")
+        XCTAssertEqual(model.publisher, "mlx-community")
+        XCTAssertEqual(model.arch, "qwen")
+        XCTAssertEqual(model.quantization, "4bit")
+        XCTAssertEqual(model.generationType, "text")
+        XCTAssertEqual(model.modelFamily, "chat")
+        XCTAssertEqual(model.state, "loaded")
+        XCTAssertEqual(model.maxContextLength, 32768)
+    }
+
+    func testChatRequestsUseAliasIDNotResolvedModelID() async throws {
+        let transport = RecordingTransport(
+            response: MockResponse(
+                statusCode: 200,
+                body: Data(#"{"id":"chat","model":"mlx-plan","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}"#.utf8)
+            )
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        _ = try await client.completeChat(
+            model: "mlx-plan",
+            messages: [ChatTranscriptMessage(role: "user", content: "Plan this")]
+        )
+
+        XCTAssertEqual(transport.requestBodies.count, 1)
+        XCTAssertTrue(transport.requestBodies[0].contains(#""model":"mlx-plan""#))
+        XCTAssertFalse(transport.requestBodies[0].contains("mlx-community/Qwen3.6-35B-A3B-4bit"))
+    }
+
+    func testAliasDisplayMetadataExposesUsefulTags() {
+        let model = ProviderModelMetadata(
+            id: "mlx-coding",
+            capability: .chatText,
+            state: "loaded",
+            resolvedModel: "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
+            role: "coding",
+            arch: "devstral",
+            quantization: "4bit",
+            modelFamily: "chat"
+        )
+
+        XCTAssertEqual(model.primaryDisplayName, "mlx-coding")
+        XCTAssertEqual(model.secondaryDisplayText, "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit")
+        XCTAssertEqual(model.displayTags, ["coding", "devstral", "4bit", "chat", "loaded"])
+    }
+
     func testFetchModelMetadataParsesNormalChatTextModel() async throws {
         let transport = FakeTransport(
             responses: [
@@ -255,7 +341,13 @@ final class ProviderModelMetadataTests: XCTestCase {
 
         XCTAssertEqual(result.statusCode, 200)
         XCTAssertEqual(result.models, [
-            ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+            ProviderModelMetadata(
+                id: "mlx-ask",
+                capability: .chatText,
+                state: "loaded",
+                generationType: "text",
+                modelFamily: "chat"
+            ),
         ])
         XCTAssertEqual(transport.requestKeys, ["GET /provider/v1/models"])
     }
@@ -324,7 +416,13 @@ final class ProviderModelMetadataTests: XCTestCase {
         let result = try await client.fetchModelMetadata()
 
         XCTAssertEqual(result.models, [
-            ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+            ProviderModelMetadata(
+                id: "mlx-ask",
+                capability: .chatText,
+                state: "loaded",
+                generationType: "text",
+                modelFamily: "chat"
+            ),
         ])
         XCTAssertEqual(transport.requestKeys, ["GET /provider/v1/models", "GET /api/v0/models"])
     }
@@ -346,7 +444,13 @@ final class ProviderModelMetadataTests: XCTestCase {
         let result = try await client.fetchModelMetadata()
 
         XCTAssertEqual(result.models, [
-            ProviderModelMetadata(id: "mlx-plan", capability: .chatText, state: "loaded"),
+            ProviderModelMetadata(
+                id: "mlx-plan",
+                capability: .chatText,
+                state: "loaded",
+                generationType: "text",
+                modelFamily: "chat"
+            ),
         ])
         XCTAssertEqual(transport.requestKeys, ["GET /provider/v1/models", "GET /api/v0/models"])
     }
@@ -373,7 +477,9 @@ final class ProviderModelMetadataTests: XCTestCase {
                 ProviderModelMetadata(
                     id: "mlx-community/Devstral",
                     capability: .unsupported(reason: "Install this model before chatting"),
-                    state: "not_installed"
+                    state: "not_installed",
+                    generationType: "text",
+                    modelFamily: "chat"
                 ),
             ]
         )

@@ -133,12 +133,19 @@ struct ModelRow: View {
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(model.id)
+                    Text(model.primaryDisplayName)
                         .font(.callout)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
 
-                    CapabilityBadge(capability: model.capability)
+                    if let secondaryText = model.secondaryDisplayText {
+                        Text(secondaryText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    ModelTagRow(model: model)
                 }
 
                 Spacer(minLength: 0)
@@ -150,6 +157,77 @@ struct ModelRow: View {
         .buttonStyle(.plain)
         .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+}
+
+struct ModelTagRow: View {
+    let model: ProviderModelMetadata
+
+    var body: some View {
+        FlowLayout(spacing: 4) {
+            CapabilityBadge(capability: model.capability)
+
+            ForEach(model.displayTags, id: \.self) { tag in
+                Text(tag)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            }
+        }
+    }
+}
+
+struct FlowLayout: Layout {
+    let spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 0
+        let rows = rows(in: width, subviews: subviews)
+        return CGSize(width: width, height: rows.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+
+    private func rows(in width: CGFloat, subviews: Subviews) -> (height: CGFloat, width: CGFloat) {
+        var currentWidth: CGFloat = 0
+        var currentHeight: CGFloat = 0
+        var totalHeight: CGFloat = 0
+        var maxWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentWidth > 0, currentWidth + size.width > width {
+                totalHeight += currentHeight + spacing
+                maxWidth = max(maxWidth, currentWidth - spacing)
+                currentWidth = 0
+                currentHeight = 0
+            }
+            currentWidth += size.width + spacing
+            currentHeight = max(currentHeight, size.height)
+        }
+
+        totalHeight += currentHeight
+        maxWidth = max(maxWidth, currentWidth - spacing)
+        return (totalHeight, maxWidth)
     }
 }
 
@@ -429,6 +507,9 @@ final class ChatAppViewModel: ObservableObject {
         guard let model = catalog.model(id: selectedModel) else {
             return baseURLText
         }
+        if let resolvedModel = model.resolvedModel {
+            return "\(resolvedModel) - \(baseURLText)"
+        }
         return "\(model.capability.displayName) - \(baseURLText)"
     }
 
@@ -566,16 +647,16 @@ final class ChatAppViewModel: ObservableObject {
     }
 
     private func fetchModelCatalog(using client: ProviderClient) async throws -> ProviderModelCatalog {
-        let advertisedModels = try await client.fetchModels().models
+        let advertisedModels = try await client.fetchModelList().models
         do {
             let metadata = try await client.fetchModelMetadata().models
             Self.appLogger.notice("Building model catalog advertised=\(advertisedModels.count, privacy: .public) metadata=\(metadata.count, privacy: .public)")
             logAppNotice("Building model catalog advertised=\(advertisedModels.count) metadata=\(metadata.count)")
-            return ProviderModelCatalog(advertisedModelIDs: advertisedModels, metadata: metadata)
+            return ProviderModelCatalog(advertisedModels: advertisedModels, metadata: metadata)
         } catch {
             Self.appLogger.warning("Model metadata unavailable; falling back to advertised models only error=\(error.localizedDescription, privacy: .public)")
             logAppWarning("Model metadata unavailable; falling back to advertised models only error=\(error.localizedDescription)")
-            return ProviderModelCatalog(modelIDs: advertisedModels)
+            return ProviderModelCatalog(models: advertisedModels)
         }
     }
 

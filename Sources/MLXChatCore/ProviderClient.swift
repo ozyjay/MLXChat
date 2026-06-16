@@ -87,16 +87,21 @@ public struct ProviderClient {
     }
 
     public func fetchModels() async throws -> (models: [String], statusCode: Int) {
+        let result = try await fetchModelList()
+        return (result.models.map(\.id), result.statusCode)
+    }
+
+    public func fetchModelList() async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
         let response = try await request(path: "/v1/models", method: .get)
         guard response.isSuccess else {
             throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
         }
 
         let payload = try jsonDecoder.decode(ModelsPayload.self, from: response.body)
-        let modelNames = payload.data.map { $0.id }
-        Self.logger.notice("Fetched advertised models count=\(modelNames.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
-        Self.logFileNotice("Fetched advertised models count=\(modelNames.count) status=\(response.statusCode)")
-        return (modelNames, response.statusCode)
+        let models = payload.data.map(\.metadata)
+        Self.logger.notice("Fetched advertised models count=\(models.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
+        Self.logFileNotice("Fetched advertised models count=\(models.count) status=\(response.statusCode)")
+        return (models, response.statusCode)
     }
 
     public func fetchModelMetadata() async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
@@ -253,6 +258,60 @@ public struct ProviderClient {
 
     private struct ProviderModel: Decodable {
         let id: String
+        let resolvedModel: String?
+        let role: String?
+        let ownedBy: String?
+        let publisher: String?
+        let arch: String?
+        let quantization: String?
+        let generationType: String?
+        let modelFamily: String?
+        let state: String?
+        let maxContextLength: Int?
+
+        var metadata: ProviderModelMetadata {
+            ProviderModelMetadata(
+                id: id,
+                capability: capability,
+                state: state,
+                resolvedModel: resolvedModel,
+                role: role,
+                ownedBy: ownedBy,
+                publisher: publisher,
+                arch: arch,
+                quantization: quantization,
+                generationType: generationType,
+                modelFamily: modelFamily,
+                maxContextLength: maxContextLength
+            )
+        }
+
+        private var capability: ProviderModelCapability {
+            if state == "unsupported" {
+                return .unsupported(reason: "Unsupported by provider")
+            }
+            if state == "not_installed" {
+                return .unsupported(reason: "Model is not installed")
+            }
+            if generationType == "text", modelFamily == "diffusion_text" {
+                return .diffusionText
+            }
+            return .chatText
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id
+            case resolvedModel = "resolved_model"
+            case role
+            case ownedBy = "owned_by"
+            case publisher
+            case arch
+            case quantization
+            case generationType = "generation_type"
+            case modelFamily = "model_family"
+            case state
+            case maxContextLength = "max_context_length"
+        }
     }
 
     private struct ModelMetadataPayload: Decodable {
@@ -262,9 +321,16 @@ public struct ProviderClient {
     private struct ProviderModelMetadataPayload: Decodable {
         let id: String
         let type: String?
+        let resolvedModel: String?
+        let role: String?
+        let ownedBy: String?
+        let publisher: String?
+        let arch: String?
+        let quantization: String?
         let generationType: String?
         let modelFamily: String?
         let state: String?
+        let maxContextLength: Int?
         let reason: String?
         let unsupportedReason: String?
         let notInstalledReason: String?
@@ -273,7 +339,16 @@ public struct ProviderClient {
             ProviderModelMetadata(
                 id: id,
                 capability: capability,
-                state: state
+                state: state,
+                resolvedModel: resolvedModel,
+                role: role,
+                ownedBy: ownedBy,
+                publisher: publisher,
+                arch: arch,
+                quantization: quantization,
+                generationType: generationType,
+                modelFamily: modelFamily,
+                maxContextLength: maxContextLength
             )
         }
 
@@ -293,9 +368,16 @@ public struct ProviderClient {
         private enum CodingKeys: String, CodingKey {
             case id
             case type
+            case resolvedModel = "resolved_model"
+            case role
+            case ownedBy = "owned_by"
+            case publisher
+            case arch
+            case quantization
             case generationType = "generation_type"
             case modelFamily = "model_family"
             case state
+            case maxContextLength = "max_context_length"
             case reason
             case unsupportedReason = "unsupported_reason"
             case notInstalledReason = "not_installed_reason"

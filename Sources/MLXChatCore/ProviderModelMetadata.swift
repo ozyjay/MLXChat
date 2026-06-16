@@ -37,15 +37,79 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
     public let id: String
     public let capability: ProviderModelCapability
     public let state: String?
+    public let resolvedModel: String?
+    public let role: String?
+    public let ownedBy: String?
+    public let publisher: String?
+    public let arch: String?
+    public let quantization: String?
+    public let generationType: String?
+    public let modelFamily: String?
+    public let maxContextLength: Int?
 
     public var isSendableTextModel: Bool {
         capability.isSendableTextModel
     }
 
-    public init(id: String, capability: ProviderModelCapability, state: String? = nil) {
+    public var primaryDisplayName: String {
+        id
+    }
+
+    public var secondaryDisplayText: String? {
+        resolvedModel
+    }
+
+    public var displayTags: [String] {
+        [role, arch, quantization, modelFamily, state]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+    }
+
+    public init(
+        id: String,
+        capability: ProviderModelCapability,
+        state: String? = nil,
+        resolvedModel: String? = nil,
+        role: String? = nil,
+        ownedBy: String? = nil,
+        publisher: String? = nil,
+        arch: String? = nil,
+        quantization: String? = nil,
+        generationType: String? = nil,
+        modelFamily: String? = nil,
+        maxContextLength: Int? = nil
+    ) {
         self.id = id
         self.capability = capability
         self.state = state
+        self.resolvedModel = resolvedModel
+        self.role = role
+        self.ownedBy = ownedBy
+        self.publisher = publisher
+        self.arch = arch
+        self.quantization = quantization
+        self.generationType = generationType
+        self.modelFamily = modelFamily
+        self.maxContextLength = maxContextLength
+    }
+
+    public func mergingMetadata(from other: ProviderModelMetadata) -> ProviderModelMetadata {
+        ProviderModelMetadata(
+            id: id,
+            capability: other.capability,
+            state: other.state ?? state,
+            resolvedModel: other.resolvedModel ?? resolvedModel,
+            role: other.role ?? role,
+            ownedBy: other.ownedBy ?? ownedBy,
+            publisher: other.publisher ?? publisher,
+            arch: other.arch ?? arch,
+            quantization: other.quantization ?? quantization,
+            generationType: other.generationType ?? generationType,
+            modelFamily: other.modelFamily ?? modelFamily,
+            maxContextLength: other.maxContextLength ?? maxContextLength
+        )
     }
 }
 
@@ -63,12 +127,24 @@ public struct ProviderModelCatalog: Equatable, Sendable {
     }
 
     public init(advertisedModelIDs: [String], metadata: [ProviderModelMetadata]) {
+        self.init(
+            advertisedModels: advertisedModelIDs.map {
+                ProviderModelMetadata(id: $0, capability: .chatText, state: nil)
+            },
+            metadata: metadata
+        )
+    }
+
+    public init(advertisedModels: [ProviderModelMetadata], metadata: [ProviderModelMetadata]) {
         var metadataByID: [String: ProviderModelMetadata] = [:]
         for model in metadata {
             metadataByID[model.id] = model
         }
-        self.models = advertisedModelIDs.map {
-            metadataByID[$0] ?? ProviderModelMetadata(id: $0, capability: .chatText, state: nil)
+        self.models = advertisedModels.map { advertised in
+            if let modelMetadata = metadataByID[advertised.id] {
+                return advertised.mergingMetadata(from: modelMetadata)
+            }
+            return advertised
         }
     }
 
