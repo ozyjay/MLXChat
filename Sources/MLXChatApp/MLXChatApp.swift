@@ -400,7 +400,7 @@ struct ChatBubble: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                Text(message.content)
+                MessageContentText(message: message)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -416,6 +416,19 @@ struct ChatBubble: View {
     }
 }
 
+struct MessageContentText: View {
+    let message: ChatDisplayMessage
+
+    var body: some View {
+        Text(renderedContent)
+    }
+
+    private var renderedContent: AttributedString {
+        (try? ChatMessagePresentation.renderedContent(role: message.role, content: message.content))
+            ?? AttributedString(message.content)
+    }
+}
+
 struct ComposerView: View {
     @ObservedObject var viewModel: ChatAppViewModel
     let focusedField: FocusState<FocusedAppField?>.Binding
@@ -427,11 +440,12 @@ struct ComposerView: View {
                 .textFieldStyle(.roundedBorder)
                 .disabled(viewModel.isSending)
                 .focused(focusedField, equals: .composer)
+                .onSubmit {
+                    submitDraft()
+                }
 
             Button {
-                Task {
-                    await viewModel.sendMessage()
-                }
+                submitDraft()
             } label: {
                 Label("Send", systemImage: "paperplane.fill")
             }
@@ -439,6 +453,13 @@ struct ComposerView: View {
             .disabled(!viewModel.canSend)
         }
         .padding(18)
+    }
+
+    private func submitDraft() {
+        guard viewModel.canSend else { return }
+        Task {
+            await viewModel.sendMessage()
+        }
     }
 }
 

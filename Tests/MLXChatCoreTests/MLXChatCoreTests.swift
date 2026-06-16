@@ -236,6 +236,26 @@ final class ProviderChatCompletionTests: XCTestCase {
     }
 }
 
+final class ChatMessagePresentationTests: XCTestCase {
+    func testAssistantContentRendersMarkdownMarkers() throws {
+        let rendered = try ChatMessagePresentation.renderedContent(
+            role: "assistant",
+            content: "**Bold** response"
+        )
+
+        XCTAssertEqual(String(rendered.characters), "Bold response")
+    }
+
+    func testUserContentKeepsMarkdownMarkersLiteral() throws {
+        let rendered = try ChatMessagePresentation.renderedContent(
+            role: "user",
+            content: "**Literal** prompt"
+        )
+
+        XCTAssertEqual(String(rendered.characters), "**Literal** prompt")
+    }
+}
+
 final class ProviderModeAdviceTests: XCTestCase {
     func testFetchModeAdviceSendsLatestPromptAndSelectedModel() async throws {
         let transport = RecordingTransport(
