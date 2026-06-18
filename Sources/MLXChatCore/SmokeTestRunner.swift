@@ -52,7 +52,6 @@ public struct SmokeTestRunner {
 
     public func run(includeStreamingCheck: Bool) async -> SmokeReport {
         var checks: [CheckResult] = []
-
         checks.append(await checkHealth())
         checks.append(await checkModelAliases())
         checks.append(await checkChatCompletions())
@@ -60,7 +59,6 @@ public struct SmokeTestRunner {
         if includeStreamingCheck {
             checks.append(await checkChatStream())
         }
-
         return SmokeReport(checks: checks, includeStreamingCheck: includeStreamingCheck)
     }
 
@@ -71,10 +69,8 @@ public struct SmokeTestRunner {
             if response.isSuccess {
                 let payload = try? JSONSerialization.jsonObject(with: response.body)
                 let body = payload as? [String: Any]
-                let status = body?["status"] as? String
-                passed = status == "ok"
+                passed = body?["status"] as? String == "ok"
             }
-
             return CheckResult(
                 name: "Health",
                 route: "/health",
@@ -93,21 +89,28 @@ public struct SmokeTestRunner {
     }
 
     private func checkModelAliases() async -> CheckResult {
-        let requiredAliases = ["mlx-ask", "mlx-plan", "mlx-coding"]
-
         do {
             let (models, status) = try await client.fetchModels()
-            let missing = requiredAliases.filter { !models.contains($0) }
-            let passed = missing.isEmpty
-
+            let missingBaseAliases = ["mlx-ask", "mlx-plan"].filter { !models.contains($0) }
+            let hasCanonicalCoding = models.contains("mlx-coding")
+            let hasLegacyCoding = models.contains("mlx-fast")
+            let passed = missingBaseAliases.isEmpty && (hasCanonicalCoding || hasLegacyCoding)
+            let details: String
+            if !missingBaseAliases.isEmpty {
+                details = "missing aliases: \(missingBaseAliases.joined(separator: ", "))"
+            } else if hasCanonicalCoding {
+                details = "canonical aliases present"
+            } else if hasLegacyCoding {
+                details = "legacy mlx-fast coding alias present; upgrade provider to mlx-coding"
+            } else {
+                details = "missing alias: mlx-coding"
+            }
             return CheckResult(
                 name: "Models",
                 route: "/v1/models",
                 passed: passed,
                 statusCode: status,
-                details: passed
-                    ? "required aliases present"
-                    : "missing aliases: \(missing.joined(separator: ", "))"
+                details: details
             )
         } catch {
             return CheckResult(
@@ -132,12 +135,10 @@ public struct SmokeTestRunner {
                     details: "unexpected status"
                 )
             }
-
             let payload = try JSONSerialization.jsonObject(with: response.body)
             let body = payload as? [String: Any]
             let choices = body?["choices"] as? [[String: Any]]
             let hasChoices = choices?.isEmpty == false
-
             return CheckResult(
                 name: "Chat completions",
                 route: "/v1/chat/completions",
@@ -170,11 +171,9 @@ public struct SmokeTestRunner {
                     details: "unexpected status"
                 )
             }
-
             let payload = try JSONSerialization.jsonObject(with: response.body)
             let body = payload as? [String: Any]
             let hasOutput = body?["output"] != nil || body?["choices"] != nil
-
             return CheckResult(
                 name: "Responses",
                 route: "/v1/responses",
@@ -211,7 +210,6 @@ public struct SmokeTestRunner {
             let looksLikeStreaming = bodyText.contains("data:")
                 || bodyText.contains("[DONE]")
                 || bodyText.contains("event:")
-
             return CheckResult(
                 name: "Chat stream",
                 route: "/v1/chat/completions?stream=true",
