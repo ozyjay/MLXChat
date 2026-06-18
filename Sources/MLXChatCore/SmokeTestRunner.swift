@@ -93,7 +93,7 @@ public struct SmokeTestRunner {
     }
 
     private func checkModelAliases() async -> CheckResult {
-        let requiredAliases = ["mlx-ask", "mlx-plan", "mlx-fast"]
+        let requiredAliases = ["mlx-ask", "mlx-plan", "mlx-coding"]
 
         do {
             let (models, status) = try await client.fetchModels()
@@ -136,7 +136,7 @@ public struct SmokeTestRunner {
             let payload = try JSONSerialization.jsonObject(with: response.body)
             let body = payload as? [String: Any]
             let choices = body?["choices"] as? [[String: Any]]
-            let hasChoices = (choices?.isEmpty == false)
+            let hasChoices = choices?.isEmpty == false
 
             return CheckResult(
                 name: "Chat completions",
