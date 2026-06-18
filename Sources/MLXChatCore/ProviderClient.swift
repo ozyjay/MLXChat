@@ -16,11 +16,11 @@ public enum ProviderClientError: Error, LocalizedError {
         switch self {
         case .nonHTTPResponse:
             return "Received a non-HTTP response."
-        case let .invalidURL(path):
+        case .invalidURL(let path):
             return "Cannot construct a valid URL for path: \(path)"
-        case let .requestFailed(error):
+        case .requestFailed(let error):
             return "Request failed: \(error.localizedDescription)"
-        case let .unexpectedStatusCode(code, message):
+        case .unexpectedStatusCode(let code, let message):
             if let message, !message.isEmpty {
                 return "Unexpected status code \(code): \(message)"
             }
@@ -70,12 +70,24 @@ public struct ProviderClient {
     private let jsonDecoder: JSONDecoder
 
     public init(baseURL: URL, transport: HTTPTransport) {
-        self.baseURL = LocalProviderURLValidator.providerURL(from: baseURL.absoluteString) ?? baseURL
+        let normalizedBaseURL =
+            LocalProviderURLValidator.providerURL(from: baseURL.absoluteString)
+            ?? baseURL
+
+        let safeBaseURLDescription =
+            ProviderLogSanitizer.safeBaseURLDescription(normalizedBaseURL)
+
+        self.baseURL = normalizedBaseURL
         self.transport = transport
         self.jsonEncoder = JSONEncoder()
         self.jsonDecoder = JSONDecoder()
-        Self.logger.debug("ProviderClient created baseURL=\(ProviderLogSanitizer.safeBaseURLDescription(self.baseURL), privacy: .public)")
-        Self.logFileDebug("ProviderClient created baseURL=\(ProviderLogSanitizer.safeBaseURLDescription(self.baseURL))")
+
+        Self.logger.debug(
+            "ProviderClient created baseURL=\(safeBaseURLDescription, privacy: .public)"
+        )
+        Self.logFileDebug(
+            "ProviderClient created baseURL=\(safeBaseURLDescription)"
+        )
     }
 
     public init(baseURL: URL, timeout: TimeInterval) {
@@ -91,28 +103,39 @@ public struct ProviderClient {
         return (result.models.map(\.id), result.statusCode)
     }
 
-    public func fetchModelList() async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
+    public func fetchModelList() async throws -> (models: [ProviderModelMetadata], statusCode: Int)
+    {
         let response = try await request(path: "/v1/models", method: .get)
         guard response.isSuccess else {
-            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+            throw ProviderClientError.unexpectedStatusCode(
+                response.statusCode, responseText(response.body))
         }
 
         let payload = try jsonDecoder.decode(ModelsPayload.self, from: response.body)
         let models = payload.data.map(\.metadata)
-        Self.logger.notice("Fetched advertised models count=\(models.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
-        Self.logFileNotice("Fetched advertised models count=\(models.count) status=\(response.statusCode)")
+        Self.logger.notice(
+            "Fetched advertised models count=\(models.count, privacy: .public) status=\(response.statusCode, privacy: .public)"
+        )
+        Self.logFileNotice(
+            "Fetched advertised models count=\(models.count) status=\(response.statusCode)")
         return (models, response.statusCode)
     }
 
-    public func fetchModelMetadata() async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
+    public func fetchModelMetadata() async throws -> (
+        models: [ProviderModelMetadata], statusCode: Int
+    ) {
         do {
             return try await fetchModelMetadata(path: "/provider/v1/models")
         } catch {
             guard shouldFallbackToLegacyMetadataRoute(error) else {
                 throw error
             }
-            Self.logger.warning("Canonical provider metadata unavailable; falling back to legacy /api/v0/models error=\(error.localizedDescription, privacy: .public)")
-            Self.logFileWarning("Canonical provider metadata unavailable; falling back to legacy /api/v0/models error=\(error.localizedDescription)")
+            Self.logger.warning(
+                "Canonical provider metadata unavailable; falling back to legacy /api/v0/models error=\(error.localizedDescription, privacy: .public)"
+            )
+            Self.logFileWarning(
+                "Canonical provider metadata unavailable; falling back to legacy /api/v0/models error=\(error.localizedDescription)"
+            )
             return try await fetchModelMetadata(path: "/api/v0/models")
         }
     }
@@ -145,14 +168,20 @@ public struct ProviderClient {
         )
         let response = try await request(path: "/v1/chat/completions", method: .post, body: body)
         guard response.isSuccess else {
-            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+            throw ProviderClientError.unexpectedStatusCode(
+                response.statusCode, responseText(response.body))
         }
 
-        let payload = try jsonDecoder.decode(ChatCompletionResponsePayload.self, from: response.body)
+        let payload = try jsonDecoder.decode(
+            ChatCompletionResponsePayload.self, from: response.body)
         let firstChoice = payload.choices.first
         let assistantText = firstChoice?.message?.content ?? firstChoice?.text ?? ""
-        Self.logger.notice("Completed chat model=\(model, privacy: .public) resolvedModel=\(payload.model ?? model, privacy: .public) status=\(response.statusCode, privacy: .public) replyCharacters=\(assistantText.count, privacy: .public)")
-        Self.logFileNotice("Completed chat model=\(model) resolvedModel=\(payload.model ?? model) status=\(response.statusCode) replyCharacters=\(assistantText.count)")
+        Self.logger.notice(
+            "Completed chat model=\(model, privacy: .public) resolvedModel=\(payload.model ?? model, privacy: .public) status=\(response.statusCode, privacy: .public) replyCharacters=\(assistantText.count, privacy: .public)"
+        )
+        Self.logFileNotice(
+            "Completed chat model=\(model) resolvedModel=\(payload.model ?? model) status=\(response.statusCode) replyCharacters=\(assistantText.count)"
+        )
 
         return ChatCompletionResult(
             model: payload.model ?? model,
@@ -165,30 +194,43 @@ public struct ProviderClient {
         )
     }
 
-    public func fetchModeAdvice(input: String, selectedModel: String) async throws -> ProviderModeAdvice {
+    public func fetchModeAdvice(input: String, selectedModel: String) async throws
+        -> ProviderModeAdvice
+    {
         let body = ModeAdviceRequestPayload(input: input, selectedModel: selectedModel)
-        let response = try await request(path: "/provider/v1/mode-advice", method: .post, body: body)
+        let response = try await request(
+            path: "/provider/v1/mode-advice", method: .post, body: body)
         guard response.isSuccess else {
-            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+            throw ProviderClientError.unexpectedStatusCode(
+                response.statusCode, responseText(response.body))
         }
         return try jsonDecoder.decode(ProviderModeAdvice.self, from: response.body)
     }
 
-    public func responses(model: String, prompt: String = "Hello", stream: Bool = false) async throws -> HTTPResponse {
+    public func responses(model: String, prompt: String = "Hello", stream: Bool = false)
+        async throws -> HTTPResponse
+    {
         let body = ResponsesPayload(model: model, input: prompt, stream: stream)
         return try await request(path: "/v1/responses", method: .post, body: body)
     }
 
-    private func fetchModelMetadata(path: String) async throws -> (models: [ProviderModelMetadata], statusCode: Int) {
+    private func fetchModelMetadata(path: String) async throws -> (
+        models: [ProviderModelMetadata], statusCode: Int
+    ) {
         let response = try await request(path: path, method: .get)
         guard response.isSuccess else {
-            throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(response.body))
+            throw ProviderClientError.unexpectedStatusCode(
+                response.statusCode, responseText(response.body))
         }
 
         let payload = try jsonDecoder.decode(ModelMetadataPayload.self, from: response.body)
         let metadata = payload.data.map(\.metadata)
-        Self.logger.notice("Fetched model metadata count=\(metadata.count, privacy: .public) status=\(response.statusCode, privacy: .public)")
-        Self.logFileNotice("Fetched model metadata path=\(path) count=\(metadata.count) status=\(response.statusCode)")
+        Self.logger.notice(
+            "Fetched model metadata count=\(metadata.count, privacy: .public) status=\(response.statusCode, privacy: .public)"
+        )
+        Self.logFileNotice(
+            "Fetched model metadata path=\(path) count=\(metadata.count) status=\(response.statusCode)"
+        )
         return (metadata, response.statusCode)
     }
 
@@ -202,21 +244,29 @@ public struct ProviderClient {
         return false
     }
 
-    private func request(path: String, method: HTTPMethod, body: (any Encodable)? = nil) async throws -> HTTPResponse {
+    private func request(path: String, method: HTTPMethod, body: (any Encodable)? = nil)
+        async throws -> HTTPResponse
+    {
         let url = try buildURL(path: path)
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = method.rawValue
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        Self.logger.debug("Provider request start method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public)")
+        Self.logger.debug(
+            "Provider request start method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public)"
+        )
         Self.logFileDebug("Provider request start method=\(method.rawValue) path=\(path)")
 
         if let body {
             do {
                 urlRequest.httpBody = try jsonEncoder.encode(AnyEncodable(value: body))
             } catch {
-                Self.logger.error("Provider request encode failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-                Self.logFileError("Provider request encode failed method=\(method.rawValue) path=\(path) error=\(error.localizedDescription)")
+                Self.logger.error(
+                    "Provider request encode failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+                Self.logFileError(
+                    "Provider request encode failed method=\(method.rawValue) path=\(path) error=\(error.localizedDescription)"
+                )
                 throw ProviderClientError.requestFailed(error)
             }
         }
@@ -224,25 +274,40 @@ public struct ProviderClient {
         do {
             let (data, response) = try await transport.send(urlRequest)
             if (200..<300).contains(response.statusCode) {
-                Self.logger.debug("Provider request finished method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) status=\(response.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)")
-                Self.logFileDebug("Provider request finished method=\(method.rawValue) path=\(path) status=\(response.statusCode) bytes=\(data.count)")
+                Self.logger.debug(
+                    "Provider request finished method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) status=\(response.statusCode, privacy: .public) bytes=\(data.count, privacy: .public)"
+                )
+                Self.logFileDebug(
+                    "Provider request finished method=\(method.rawValue) path=\(path) status=\(response.statusCode) bytes=\(data.count)"
+                )
             } else {
-                Self.logger.error("Provider request non-success method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) status=\(response.statusCode, privacy: .public) body=\"\(ProviderLogSanitizer.responseSnippet(data), privacy: .public)\"")
-                Self.logFileError("Provider request non-success method=\(method.rawValue) path=\(path) status=\(response.statusCode) body=\"\(ProviderLogSanitizer.responseSnippet(data))\"")
+                Self.logger.error(
+                    "Provider request non-success method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) status=\(response.statusCode, privacy: .public) body=\"\(ProviderLogSanitizer.responseSnippet(data), privacy: .public)\""
+                )
+                Self.logFileError(
+                    "Provider request non-success method=\(method.rawValue) path=\(path) status=\(response.statusCode) body=\"\(ProviderLogSanitizer.responseSnippet(data))\""
+                )
             }
             return HTTPResponse(statusCode: response.statusCode, body: data)
         } catch let error as ProviderClientError {
             throw error
         } catch {
-            Self.logger.error("Provider request failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            Self.logFileError("Provider request failed method=\(method.rawValue) path=\(path) error=\(error.localizedDescription)")
+            Self.logger.error(
+                "Provider request failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            Self.logFileError(
+                "Provider request failed method=\(method.rawValue) path=\(path) error=\(error.localizedDescription)"
+            )
             throw ProviderClientError.requestFailed(error)
         }
     }
 
     private func buildURL(path: String) throws -> URL {
         let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: normalizedPath, relativeTo: baseURL.appending(path: ""))?.absoluteURL else {
+        guard
+            let url = URL(string: normalizedPath, relativeTo: baseURL.appending(path: ""))?
+                .absoluteURL
+        else {
             throw ProviderClientError.invalidURL(path)
         }
         return url
@@ -400,10 +465,12 @@ public struct ProviderClient {
 
         private var capability: ProviderModelCapability {
             if state == "unsupported" {
-                return .unsupported(reason: unsupportedReason ?? reason ?? "Unsupported by provider")
+                return .unsupported(
+                    reason: unsupportedReason ?? reason ?? "Unsupported by provider")
             }
             if state == "not_installed" {
-                return .unsupported(reason: notInstalledReason ?? reason ?? "Model is not installed")
+                return .unsupported(
+                    reason: notInstalledReason ?? reason ?? "Model is not installed")
             }
             if generationType == "text", modelFamily == "diffusion_text" {
                 return .diffusionText
@@ -448,7 +515,10 @@ public struct ProviderClient {
         let stop: [String]?
         let mlxDiffusion: TextDiffusionOptions?
 
-        init(model: String, messages: [ChatTranscriptMessage], stream: Bool, options: ChatGenerationOptions) {
+        init(
+            model: String, messages: [ChatTranscriptMessage], stream: Bool,
+            options: ChatGenerationOptions
+        ) {
             self.model = model
             self.messages = messages
             self.stream = stream

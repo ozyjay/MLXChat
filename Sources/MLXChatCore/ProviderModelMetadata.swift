@@ -74,7 +74,7 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
     }
 
     public var canStream: Bool {
-        supportsStreaming ?? capability == .chatText
+        supportsStreaming ?? (capability == .chatText)
     }
 
     public var supportsDiffusionOptions: Bool {
