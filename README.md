@@ -114,6 +114,7 @@ Read the project docs in this order:
 1. [Project brief](docs/project-brief.md)
 2. [MLXDashboard provider contract](docs/mlxdashboard-provider-contract.md)
 3. [Client tooling roadmap](docs/client-tooling-roadmap.md)
-4. [Development workflow](docs/development-workflow.md)
+4. [Streaming chat and output quality plan](docs/streaming-chat-and-output-quality-plan.md)
+5. [Development workflow](docs/development-workflow.md)
 
 When provider behaviour changes, update [docs/mlxdashboard-provider-contract.md](docs/mlxdashboard-provider-contract.md) and link the change back to the relevant MLXDashboard source or test.
