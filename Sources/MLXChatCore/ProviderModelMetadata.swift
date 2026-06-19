@@ -47,6 +47,11 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
     public let modelFamily: String?
     public let compatibilityType: String?
     public let maxContextLength: Int?
+    public let maxOutputTokens: Int?
+    public let runtime: String?
+    public let modelType: String?
+    public let supportsStreaming: Bool?
+    public let supportedGenerationModes: [String]?
 
     public var isSendableTextModel: Bool {
         capability.isSendableTextModel
@@ -61,11 +66,21 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
     }
 
     public var displayTags: [String] {
-        [role, arch, quantization, modelFamily, state]
+        [role, arch, quantization, runtime, modelFamily, state]
             .compactMap { value in
                 guard let value, !value.isEmpty else { return nil }
                 return value
             }
+    }
+
+    public var canStream: Bool {
+        supportsStreaming ?? (capability == .chatText)
+    }
+
+    public var supportsDiffusionOptions: Bool {
+        capability == .diffusionText
+            || supportedGenerationModes?.contains("diffusion") == true
+            || supportedGenerationModes?.contains("linear_spec") == true
     }
 
     public init(
@@ -81,7 +96,12 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
         generationType: String? = nil,
         modelFamily: String? = nil,
         compatibilityType: String? = nil,
-        maxContextLength: Int? = nil
+        maxContextLength: Int? = nil,
+        maxOutputTokens: Int? = nil,
+        runtime: String? = nil,
+        modelType: String? = nil,
+        supportsStreaming: Bool? = nil,
+        supportedGenerationModes: [String]? = nil
     ) {
         self.id = id
         self.capability = capability
@@ -96,6 +116,11 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
         self.modelFamily = modelFamily
         self.compatibilityType = compatibilityType
         self.maxContextLength = maxContextLength
+        self.maxOutputTokens = maxOutputTokens
+        self.runtime = runtime
+        self.modelType = modelType
+        self.supportsStreaming = supportsStreaming
+        self.supportedGenerationModes = supportedGenerationModes
     }
 
     public func mergingMetadata(from other: ProviderModelMetadata) -> ProviderModelMetadata {
@@ -112,7 +137,12 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
             generationType: other.generationType ?? generationType,
             modelFamily: other.modelFamily ?? modelFamily,
             compatibilityType: other.compatibilityType ?? compatibilityType,
-            maxContextLength: other.maxContextLength ?? maxContextLength
+            maxContextLength: other.maxContextLength ?? maxContextLength,
+            maxOutputTokens: other.maxOutputTokens ?? maxOutputTokens,
+            runtime: other.runtime ?? runtime,
+            modelType: other.modelType ?? modelType,
+            supportsStreaming: other.supportsStreaming ?? supportsStreaming,
+            supportedGenerationModes: other.supportedGenerationModes ?? supportedGenerationModes
         )
     }
 }
