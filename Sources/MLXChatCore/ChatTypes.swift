@@ -10,6 +10,31 @@ public struct ChatTranscriptMessage: Codable, Equatable, Sendable {
     }
 }
 
+public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let role: String
+    public var content: String
+    public let createdAt: Date
+    public var isStreaming: Bool
+    public var didFail: Bool
+
+    public init(
+        id: UUID = UUID(),
+        role: String,
+        content: String,
+        createdAt: Date = Date(),
+        isStreaming: Bool = false,
+        didFail: Bool = false
+    ) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.createdAt = createdAt
+        self.isStreaming = isStreaming
+        self.didFail = didFail
+    }
+}
+
 public struct ChatCompletionResult: Equatable, Sendable {
     public let model: String
     public let assistantText: String

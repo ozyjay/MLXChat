@@ -42,6 +42,18 @@ The provider accepts requests without a bearer token for local use. If a client 
 
 `POST /v1/responses` is translated by MLXDashboard into a chat-completions request before proxying upstream.
 
+`POST /v1/chat/completions` supports OpenAI-style streaming when the request body includes `"stream": true`. MLXDashboard proxies streamed responses as server-sent events with `content-type: text/event-stream`. MLXChat consumes `data:` frames, reads assistant text from `choices[0].delta.content`, and treats `data: [DONE]` as stream completion.
+
+Observed chat streaming frame shape:
+
+```text
+data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}
+
+data: [DONE]
+```
+
 ## Model Listing and Aliases
 
 When an active model is configured, `GET /v1/models` advertises role aliases followed by the active model:

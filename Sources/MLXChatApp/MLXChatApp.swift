@@ -89,6 +89,10 @@ struct SidebarView: View {
 
             Divider()
 
+            ConversationListView(viewModel: viewModel)
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Models")
                     .font(.caption.weight(.semibold))
@@ -118,6 +122,95 @@ struct SidebarView: View {
             Spacer()
         }
         .padding(16)
+    }
+}
+
+struct ConversationListView: View {
+    @ObservedObject var viewModel: ChatAppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Conversations")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button {
+                    viewModel.newConversation()
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("New Chat")
+                .disabled(viewModel.isSending)
+            }
+
+            if viewModel.conversationSummaries.isEmpty {
+                Text("No saved chats")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(viewModel.conversationSummaries) { conversation in
+                            ConversationRow(
+                                conversation: conversation,
+                                isSelected: conversation.id == viewModel.activeConversationID,
+                                selectAction: {
+                                    viewModel.selectConversation(conversation.id)
+                                },
+                                deleteAction: {
+                                    viewModel.deleteConversation(conversation.id)
+                                }
+                            )
+                        }
+                    }
+                }
+                .frame(maxHeight: 170)
+            }
+        }
+    }
+}
+
+struct ConversationRow: View {
+    let conversation: ConversationSummary
+    let isSelected: Bool
+    let selectAction: () -> Void
+    let deleteAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: selectAction) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(conversation.title)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(conversation.selectedModel.isEmpty ? "No model" : conversation.selectedModel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button(action: deleteAction) {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Delete Chat")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 
@@ -290,7 +383,11 @@ struct ChatPaneView: View {
 
             Divider()
 
-            TranscriptView(messages: viewModel.messages, isSending: viewModel.isSending)
+            TranscriptView(
+                messages: viewModel.messages,
+                isSending: viewModel.isSending,
+                transcriptRevision: viewModel.transcriptRevision
+            )
 
             if let modelNotice = viewModel.selectedModelNotice {
                 Divider()
@@ -343,6 +440,7 @@ struct ChatHeaderView: View {
 struct TranscriptView: View {
     let messages: [ChatDisplayMessage]
     let isSending: Bool
+    let transcriptRevision: Int
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -378,6 +476,10 @@ struct TranscriptView: View {
                     proxy.scrollTo(lastID, anchor: .bottom)
                 }
             }
+            .onChange(of: transcriptRevision) { _ in
+                guard let lastID = messages.last?.id else { return }
+                proxy.scrollTo(lastID, anchor: .bottom)
+            }
         }
     }
 }
@@ -400,9 +502,22 @@ struct ChatBubble: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                MessageContentText(message: message)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if message.content.isEmpty, message.isStreaming {
+                    Text("Streaming reply...")
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    MessageContentText(message: message)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if message.didFail {
+                    Text("Reply interrupted")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
             .padding(12)
             .background(isUser ? Color.accentColor.opacity(0.14) : Color(nsColor: .textBackgroundColor))
@@ -513,12 +628,18 @@ final class ChatAppViewModel: ObservableObject {
     @Published var models: [ProviderModelMetadata] = []
     @Published var selectedModel = ""
     @Published var messages: [ChatDisplayMessage] = []
+    @Published var conversationSummaries: [ConversationSummary] = []
+    @Published var activeConversationID: UUID?
+    @Published var transcriptRevision = 0
     @Published var draftMessage = ""
     @Published var errorMessage: String?
     @Published var isRefreshing = false
     @Published var isSending = false
 
     private var hasConfigured = false
+    private let conversationStore = ConversationStore()
+    private var activeConversation: StoredConversation?
+    private var saveTask: Task<Void, Never>?
 
     private var catalog: ProviderModelCatalog {
         ProviderModelCatalog(models: models)
@@ -558,6 +679,7 @@ final class ChatAppViewModel: ObservableObject {
         hasConfigured = true
         self.baseURLText = baseURLText
         self.selectedModel = selectedModel
+        loadInitialConversation(providerBaseURL: baseURLText, selectedModel: selectedModel)
         Self.appLogger.notice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText), privacy: .public) persistedModel=\(selectedModel, privacy: .public)")
         logAppNotice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText)) persistedModel=\(selectedModel)")
 
@@ -592,6 +714,7 @@ final class ChatAppViewModel: ObservableObject {
             let catalog = try await fetchModelCatalog(using: client)
             models = catalog.models
             selectedModel = catalog.defaultSelection(persistedSelection: selectedModel)
+            persistActiveConversation()
             Self.appLogger.notice("Provider refresh finished models=\(self.models.count, privacy: .public) selectedModel=\(self.selectedModel, privacy: .public)")
             logAppNotice("Provider refresh finished models=\(self.models.count) selectedModel=\(self.selectedModel)")
         } catch {
@@ -607,9 +730,71 @@ final class ChatAppViewModel: ObservableObject {
 
     func selectModel(_ modelID: String) {
         selectedModel = modelID
+        persistActiveConversation()
         let capability = catalog.model(id: modelID)?.capability.displayName ?? "Unknown"
         Self.appLogger.notice("Model selected id=\(modelID, privacy: .public) capability=\(capability, privacy: .public)")
         logAppNotice("Model selected id=\(modelID) capability=\(capability)")
+    }
+
+    func newConversation() {
+        guard !isSending else { return }
+        do {
+            let conversation = try conversationStore.createConversation(
+                providerBaseURL: baseURLText,
+                selectedModel: selectedModel
+            )
+            applyConversation(conversation)
+            conversationSummaries = try conversationStore.loadSummaries()
+            errorMessage = nil
+            Self.chatLogger.notice("Conversation created id=\(conversation.id.uuidString, privacy: .public)")
+            logChatNotice("Conversation created id=\(conversation.id.uuidString)")
+        } catch {
+            errorMessage = error.localizedDescription
+            Self.chatLogger.error("Conversation create failed error=\(error.localizedDescription, privacy: .public)")
+            logChatError("Conversation create failed error=\(error.localizedDescription)")
+        }
+    }
+
+    func selectConversation(_ conversationID: UUID) {
+        guard !isSending else { return }
+        do {
+            let conversation = try conversationStore.loadConversation(id: conversationID)
+            applyConversation(conversation)
+            conversationSummaries = try conversationStore.loadSummaries()
+            errorMessage = nil
+            Self.chatLogger.notice("Conversation selected id=\(conversationID.uuidString, privacy: .public)")
+            logChatNotice("Conversation selected id=\(conversationID.uuidString)")
+        } catch {
+            errorMessage = error.localizedDescription
+            Self.chatLogger.error("Conversation select failed id=\(conversationID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            logChatError("Conversation select failed id=\(conversationID.uuidString) error=\(error.localizedDescription)")
+        }
+    }
+
+    func deleteConversation(_ conversationID: UUID) {
+        guard !isSending else { return }
+        do {
+            try conversationStore.deleteConversation(id: conversationID)
+            conversationSummaries = try conversationStore.loadSummaries()
+            if activeConversationID == conversationID {
+                if let nextConversation = try conversationSummaries.first.map({ try conversationStore.loadConversation(id: $0.id) }) {
+                    applyConversation(nextConversation)
+                } else {
+                    let conversation = try conversationStore.createConversation(
+                        providerBaseURL: baseURLText,
+                        selectedModel: selectedModel
+                    )
+                    applyConversation(conversation)
+                    conversationSummaries = try conversationStore.loadSummaries()
+                }
+            }
+            Self.chatLogger.notice("Conversation deleted id=\(conversationID.uuidString, privacy: .public)")
+            logChatNotice("Conversation deleted id=\(conversationID.uuidString)")
+        } catch {
+            errorMessage = error.localizedDescription
+            Self.chatLogger.error("Conversation delete failed id=\(conversationID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            logChatError("Conversation delete failed id=\(conversationID.uuidString) error=\(error.localizedDescription)")
+        }
     }
 
     func sendMessage() async {
@@ -647,18 +832,52 @@ final class ChatAppViewModel: ObservableObject {
         let userMessage = ChatDisplayMessage(role: "user", content: prompt)
         messages.append(userMessage)
         draftMessage = ""
+        let transcript = messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) }
+
+        let assistantMessageID = UUID()
+        messages.append(
+            ChatDisplayMessage(
+                id: assistantMessageID,
+                role: "assistant",
+                content: "",
+                isStreaming: true
+            )
+        )
+        transcriptRevision += 1
+        persistActiveConversation()
 
         let client = ProviderClient(baseURL: baseURL, timeout: 60)
         do {
             let capability = catalog.model(id: modelForSend)?.capability.displayName ?? "Unknown"
             Self.chatLogger.notice("Send started model=\(modelForSend, privacy: .public) originalModel=\(originalModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
             logChatNotice("Send started model=\(modelForSend) originalModel=\(originalModel) capability=\(capability) transcriptMessages=\(self.messages.count) promptCharacters=\(prompt.count)")
-            let transcript = messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) }
-            let result = try await client.completeChat(model: modelForSend, messages: transcript)
-            messages.append(ChatDisplayMessage(role: "assistant", content: result.assistantText))
-            Self.chatLogger.notice("Send finished model=\(result.model, privacy: .public) status=\(result.statusCode, privacy: .public) replyCharacters=\(result.assistantText.count, privacy: .public)")
-            logChatNotice("Send finished model=\(result.model) status=\(result.statusCode) replyCharacters=\(result.assistantText.count)")
+            var replyCharacters = 0
+            for try await delta in client.streamChat(model: modelForSend, messages: transcript) {
+                guard let index = messages.firstIndex(where: { $0.id == assistantMessageID }) else {
+                    continue
+                }
+                if !delta.content.isEmpty {
+                    messages[index].content += delta.content
+                    replyCharacters += delta.content.count
+                    transcriptRevision += 1
+                    persistActiveConversation(debounced: true)
+                }
+            }
+            if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                messages[index].isStreaming = false
+                messages[index].didFail = false
+            }
+            transcriptRevision += 1
+            persistActiveConversation()
+            Self.chatLogger.notice("Send finished model=\(modelForSend, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public)")
+            logChatNotice("Send finished model=\(modelForSend) status=stream replyCharacters=\(replyCharacters)")
         } catch {
+            if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
+                messages[index].isStreaming = false
+                messages[index].didFail = true
+            }
+            transcriptRevision += 1
+            persistActiveConversation()
             errorMessage = error.localizedDescription
             Self.chatLogger.error("Send failed model=\(self.selectedModel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             logChatError("Send failed model=\(self.selectedModel) error=\(error.localizedDescription)")
@@ -707,9 +926,72 @@ final class ChatAppViewModel: ObservableObject {
 
     func clearTranscript() {
         messages = []
+        transcriptRevision += 1
         errorMessage = nil
+        persistActiveConversation()
         Self.chatLogger.notice("Transcript cleared")
         logChatNotice("Transcript cleared")
+    }
+
+    private func loadInitialConversation(providerBaseURL: String, selectedModel: String) {
+        do {
+            conversationSummaries = try conversationStore.loadSummaries()
+            if let firstSummary = conversationSummaries.first {
+                applyConversation(try conversationStore.loadConversation(id: firstSummary.id))
+                return
+            }
+
+            let conversation = try conversationStore.createConversation(
+                providerBaseURL: providerBaseURL,
+                selectedModel: selectedModel
+            )
+            applyConversation(conversation)
+            conversationSummaries = try conversationStore.loadSummaries()
+        } catch {
+            errorMessage = error.localizedDescription
+            Self.chatLogger.error("Conversation load failed error=\(error.localizedDescription, privacy: .public)")
+            logChatError("Conversation load failed error=\(error.localizedDescription)")
+        }
+    }
+
+    private func applyConversation(_ conversation: StoredConversation) {
+        saveTask?.cancel()
+        activeConversation = conversation
+        activeConversationID = conversation.id
+        baseURLText = conversation.providerBaseURL
+        selectedModel = conversation.selectedModel
+        messages = conversation.messages
+        transcriptRevision += 1
+    }
+
+    private func persistActiveConversation(debounced: Bool = false) {
+        saveTask?.cancel()
+        if debounced {
+            saveTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await MainActor.run {
+                    self?.persistActiveConversationNow()
+                }
+            }
+            return
+        }
+        persistActiveConversationNow()
+    }
+
+    private func persistActiveConversationNow() {
+        guard var conversation = activeConversation else { return }
+        conversation.providerBaseURL = baseURLText
+        conversation.selectedModel = selectedModel
+        conversation.messages = messages
+        do {
+            try conversationStore.save(conversation)
+            activeConversation = conversation
+            conversationSummaries = try conversationStore.loadSummaries()
+        } catch {
+            errorMessage = error.localizedDescription
+            Self.chatLogger.error("Conversation save failed id=\(conversation.id.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            logChatError("Conversation save failed id=\(conversation.id.uuidString) error=\(error.localizedDescription)")
+        }
     }
 
     private func fetchModelCatalog(using client: ProviderClient) async throws -> ProviderModelCatalog {
@@ -754,11 +1036,6 @@ final class ChatAppViewModel: ObservableObject {
     }
 }
 
-struct ChatDisplayMessage: Equatable, Identifiable {
-    let id = UUID()
-    let role: String
-    let content: String
-}
 
 enum FocusedAppField: Hashable {
     case providerURL

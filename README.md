@@ -49,9 +49,10 @@ The app:
 - lists models with `GET /v1/models`;
 - overlays richer capability metadata from `GET /provider/v1/models` when available, falling back to legacy `GET /api/v0/models` for older local providers, while only showing models advertised by `GET /v1/models`;
 - selects `mlx-ask` by default when it is advertised, otherwise the first model;
-- sends normal chat and text diffusion chat requests to `POST /v1/chat/completions`;
+- streams normal chat and text diffusion chat requests from `POST /v1/chat/completions`;
 - labels normal chat, text diffusion, and unsupported models in the sidebar;
-- persists the last local base URL and selected model;
+- persists multiple local conversations under Application Support as JSON files;
+- restores conversation-specific local base URL, selected model, and transcript history;
 - accepts only localhost provider URLs such as `http://127.0.0.1:8123`, `http://localhost:8123`, or `http://[::1]:8123`.
 
 If MLXDashboard is not running, the app should show a disconnected state rather than crash.
@@ -70,6 +71,12 @@ log stream --predicate 'subsystem == "MLXChat"'
 ```
 
 Default-visible logs include provider health, model counts, selected model IDs, chat send start/finish, request failures, status codes, and response snippets for failures. Debug logs add lower-level request start/finish details. Logs do not include full prompts, full assistant replies, or raw successful response bodies.
+
+Saved conversations are stored locally in:
+
+```sh
+"$HOME/Library/Application Support/MLXChat/Conversations"
+```
 
 ### CLI Smoke Tester
 

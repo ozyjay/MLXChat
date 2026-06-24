@@ -11,6 +11,7 @@ public enum ProviderClientError: Error, LocalizedError {
     case invalidURL(String)
     case requestFailed(Error)
     case unexpectedStatusCode(Int, String?)
+    case malformedStreamFrame(String)
 
     public var errorDescription: String? {
         switch self {
@@ -25,12 +26,18 @@ public enum ProviderClientError: Error, LocalizedError {
                 return "Unexpected status code \(code): \(message)"
             }
             return "Unexpected status code: \(code)"
+        case .malformedStreamFrame(let frame):
+            return "Malformed stream frame: \(frame)"
         }
     }
 }
 
 public protocol HTTPTransport {
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse)
+}
+
+public protocol HTTPStreamingTransport: HTTPTransport {
+    func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, Error>, HTTPURLResponse)
 }
 
 public struct URLSessionHTTPTransport: HTTPTransport {
@@ -52,12 +59,45 @@ public struct URLSessionHTTPTransport: HTTPTransport {
     }
 }
 
+extension URLSessionHTTPTransport: HTTPStreamingTransport {
+    public func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, Error>, HTTPURLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ProviderClientError.nonHTTPResponse
+        }
+
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            Task {
+                do {
+                    for try await byte in bytes {
+                        continuation.yield(Data([byte]))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+        return (stream, httpResponse)
+    }
+}
+
 public struct HTTPResponse {
     public let statusCode: Int
     public let body: Data
 
     public var isSuccess: Bool {
         (200..<300).contains(statusCode)
+    }
+}
+
+public struct ChatStreamDelta: Equatable, Sendable {
+    public let content: String
+    public let finishReason: String?
+
+    public init(content: String, finishReason: String? = nil) {
+        self.content = content
+        self.finishReason = finishReason
     }
 }
 
@@ -194,6 +234,48 @@ public struct ProviderClient {
         )
     }
 
+    public func streamChat(
+        model: String,
+        messages: [ChatTranscriptMessage],
+        options: ChatGenerationOptions = .providerDefaults
+    ) -> AsyncThrowingStream<ChatStreamDelta, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    guard let streamingTransport = transport as? HTTPStreamingTransport else {
+                        let result = try await completeChat(model: model, messages: messages, options: options)
+                        continuation.yield(ChatStreamDelta(content: result.assistantText, finishReason: result.finishReason))
+                        continuation.finish()
+                        return
+                    }
+
+                    let body = ChatCompletionPayload(
+                        model: model,
+                        messages: messages,
+                        stream: true,
+                        options: options
+                    )
+                    let request = try makeRequest(path: "/v1/chat/completions", method: .post, body: body)
+                    let (chunks, response) = try await streamingTransport.stream(request)
+
+                    guard (200..<300).contains(response.statusCode) else {
+                        let body = try await collectStreamBody(chunks)
+                        throw ProviderClientError.unexpectedStatusCode(response.statusCode, responseText(body))
+                    }
+
+                    try await consumeChatCompletionStream(chunks) { delta in
+                        continuation.yield(delta)
+                    }
+                    continuation.finish()
+                } catch let error as ProviderClientError {
+                    continuation.finish(throwing: error)
+                } catch {
+                    continuation.finish(throwing: ProviderClientError.requestFailed(error))
+                }
+            }
+        }
+    }
+
     public func fetchModeAdvice(input: String, selectedModel: String) async throws
         -> ProviderModeAdvice
     {
@@ -247,28 +329,24 @@ public struct ProviderClient {
     private func request(path: String, method: HTTPMethod, body: (any Encodable)? = nil)
         async throws -> HTTPResponse
     {
-        let url = try buildURL(path: path)
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = method.rawValue
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         Self.logger.debug(
             "Provider request start method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public)"
         )
         Self.logFileDebug("Provider request start method=\(method.rawValue) path=\(path)")
 
-        if let body {
-            do {
-                urlRequest.httpBody = try jsonEncoder.encode(AnyEncodable(value: body))
-            } catch {
-                Self.logger.error(
-                    "Provider request encode failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-                Self.logFileError(
-                    "Provider request encode failed method=\(method.rawValue) path=\(path) error=\(error.localizedDescription)"
-                )
-                throw ProviderClientError.requestFailed(error)
-            }
+        let urlRequest: URLRequest
+        do {
+            urlRequest = try makeRequest(path: path, method: method, body: body)
+        } catch let error as ProviderClientError {
+            throw error
+        } catch {
+            Self.logger.error(
+                "Provider request encode failed method=\(method.rawValue, privacy: .public) path=\(path, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            Self.logFileError(
+                "Provider request encode failed method=\(method.rawValue) path=\(path) error=\(error.localizedDescription)"
+            )
+            throw ProviderClientError.requestFailed(error)
         }
 
         do {
@@ -300,6 +378,81 @@ public struct ProviderClient {
             )
             throw ProviderClientError.requestFailed(error)
         }
+    }
+
+    private func makeRequest(path: String, method: HTTPMethod, body: (any Encodable)? = nil) throws -> URLRequest {
+        let url = try buildURL(path: path)
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = method.rawValue
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            urlRequest.httpBody = try jsonEncoder.encode(AnyEncodable(value: body))
+        }
+        return urlRequest
+    }
+
+    private func collectStreamBody(_ chunks: AsyncThrowingStream<Data, Error>) async throws -> Data {
+        var body = Data()
+        for try await chunk in chunks {
+            body.append(chunk)
+        }
+        return body
+    }
+
+    private func consumeChatCompletionStream(
+        _ chunks: AsyncThrowingStream<Data, Error>,
+        yield: (ChatStreamDelta) -> Void
+    ) async throws {
+        var buffer = ""
+
+        for try await chunk in chunks {
+            buffer += String(decoding: chunk, as: UTF8.self)
+            while let range = buffer.range(of: "\n\n") {
+                let frame = String(buffer[..<range.lowerBound])
+                buffer.removeSubrange(buffer.startIndex..<range.upperBound)
+                let isDone = try processStreamFrame(frame, yield: yield)
+                if isDone { return }
+            }
+        }
+
+        let trailingFrame = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trailingFrame.isEmpty {
+            _ = try processStreamFrame(trailingFrame, yield: yield)
+        }
+    }
+
+    private func processStreamFrame(_ frame: String, yield: (ChatStreamDelta) -> Void) throws -> Bool {
+        let dataLines = frame
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
+            .compactMap { line -> String? in
+                guard line.hasPrefix("data:") else { return nil }
+                return String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
+            }
+
+        guard !dataLines.isEmpty else { return false }
+        let payload = dataLines.joined(separator: "\n")
+        if payload == "[DONE]" {
+            return true
+        }
+
+        guard let data = payload.data(using: .utf8) else {
+            throw ProviderClientError.malformedStreamFrame(payload)
+        }
+
+        do {
+            let chunk = try jsonDecoder.decode(ChatCompletionStreamChunk.self, from: data)
+            for choice in chunk.choices {
+                let content = choice.delta?.content ?? choice.message?.content ?? choice.text ?? ""
+                if !content.isEmpty || choice.finishReason != nil {
+                    yield(ChatStreamDelta(content: content, finishReason: choice.finishReason))
+                }
+            }
+        } catch {
+            throw ProviderClientError.malformedStreamFrame(payload)
+        }
+        return false
     }
 
     private func buildURL(path: String) throws -> URL {
@@ -576,6 +729,24 @@ public struct ProviderClient {
 
     private struct ChatCompletionMessage: Decodable {
         let content: String?
+    }
+
+    private struct ChatCompletionStreamChunk: Decodable {
+        let choices: [ChatCompletionStreamChoice]
+    }
+
+    private struct ChatCompletionStreamChoice: Decodable {
+        let delta: ChatCompletionMessage?
+        let message: ChatCompletionMessage?
+        let text: String?
+        let finishReason: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case delta
+            case message
+            case text
+            case finishReason = "finish_reason"
+        }
     }
 
     private struct ResponsesPayload: Encodable {

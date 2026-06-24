@@ -234,6 +234,102 @@ final class ProviderChatCompletionTests: XCTestCase {
         XCTAssertTrue(transport.requestBodies[0].contains(#""model":"mlx-community\/Nemotron-Labs-Diffusion-3B-4bit""#))
         XCTAssertTrue(transport.requestBodies[0].contains(#""stream":false"#))
     }
+
+    func testStreamChatSendsStreamingRequestAndEmitsContentDeltas() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}"# + "\n\n",
+                #"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+            )
+        )
+
+        XCTAssertEqual(deltas, [
+            ChatStreamDelta(content: "Hel", finishReason: nil),
+            ChatStreamDelta(content: "lo", finishReason: "stop"),
+        ])
+        XCTAssertEqual(transport.requestPaths, ["/v1/chat/completions"])
+        XCTAssertTrue(transport.requestBodies.first?.contains(#""stream":true"#) == true)
+    }
+
+    func testStreamChatHandlesSplitFramesAndKeepAliveLines() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                "\n",
+                #"data: {"choices":[{"delta":{"content":"He"},"finish_reason":null}]}"#,
+                "\n\n",
+                #"data: {"choices":[{"delta":{"content":"y"},"finish_reason":null}]}"# + "\n\n" + "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "Say hey")]
+            )
+        )
+
+        XCTAssertEqual(deltas.map(\.content), ["He", "y"])
+    }
+
+    func testStreamChatThrowsForNonSuccessStatus() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 503,
+            chunks: [#"{"error":"provider unavailable"}"#]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        do {
+            _ = try await collectStream(
+                client.streamChat(
+                    model: "mlx-ask",
+                    messages: [ChatTranscriptMessage(role: "user", content: "hello")]
+                )
+            )
+            XCTFail("Expected stream to throw for non-success response.")
+        } catch let error as ProviderClientError {
+            XCTAssertEqual(error.localizedDescription, #"Unexpected status code 503: {"error":"provider unavailable"}"#)
+        }
+    }
+
+    func testStreamChatThrowsForMalformedJSONFrame() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: ["data: {not-json}\n\n"]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        do {
+            _ = try await collectStream(
+                client.streamChat(
+                    model: "mlx-ask",
+                    messages: [ChatTranscriptMessage(role: "user", content: "hello")]
+                )
+            )
+            XCTFail("Expected stream to throw for malformed JSON.")
+        } catch let error as ProviderClientError {
+            XCTAssertTrue(error.localizedDescription.contains("Malformed stream frame"))
+        }
+    }
+
+    private func collectStream(_ stream: AsyncThrowingStream<ChatStreamDelta, Error>) async throws -> [ChatStreamDelta] {
+        var deltas: [ChatStreamDelta] = []
+        for try await delta in stream {
+            deltas.append(delta)
+        }
+        return deltas
+    }
 }
 
 final class ChatMessagePresentationTests: XCTestCase {
@@ -253,6 +349,179 @@ final class ChatMessagePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(String(rendered.characters), "**Literal** prompt")
+    }
+
+    func testAssistantContentKeepsMarkdownBlocksReadable() throws {
+        let rendered = try ChatMessagePresentation.renderedContent(
+            role: "assistant",
+            content: """
+            Below is a **review** of the script.
+
+            Feel free to cherry-pick the changes.
+
+            1. What the script already does
+            2. Things that could be improved
+
+            ### Command-line usage
+
+            ```bash
+            python towers_of_hanoi.py 3
+            ```
+            """
+        )
+
+        XCTAssertEqual(
+            String(rendered.characters),
+            """
+            Below is a review of the script.
+
+            Feel free to cherry-pick the changes.
+
+            1. What the script already does
+            2. Things that could be improved
+
+            Command-line usage
+
+            python towers_of_hanoi.py 3
+            """
+        )
+    }
+
+    func testAssistantFencedCodeKeepsMarkdownLikeCharactersLiteral() throws {
+        let rendered = try ChatMessagePresentation.renderedContent(
+            role: "assistant",
+            content: """
+            ```python
+            if __name__ == "__main__":
+                print(f"Move {i}: {src} -> {dst}")
+            ```
+            """
+        )
+
+        XCTAssertEqual(
+            String(rendered.characters),
+            """
+            if __name__ == "__main__":
+                print(f"Move {i}: {src} -> {dst}")
+            """
+        )
+    }
+}
+
+final class ConversationStoreTests: XCTestCase {
+    func testCreateConversationWritesIndexAndConversationFile() throws {
+        let root = temporaryStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ConversationStore(applicationSupportDirectory: root)
+
+        let conversation = try store.createConversation(
+            providerBaseURL: "http://127.0.0.1:8123",
+            selectedModel: "mlx-ask",
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        XCTAssertEqual(conversation.title, "New Chat")
+        XCTAssertEqual(conversation.providerBaseURL, "http://127.0.0.1:8123")
+        XCTAssertEqual(conversation.selectedModel, "mlx-ask")
+        XCTAssertEqual(conversation.messages, [])
+
+        let conversationsDirectory = root
+            .appending(path: "Conversations", directoryHint: .isDirectory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: conversationsDirectory.appending(path: "index.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: conversationsDirectory.appending(path: "\(conversation.id.uuidString).json").path))
+
+        let summaries = try store.loadSummaries()
+        XCTAssertEqual(summaries, [
+            ConversationSummary(
+                id: conversation.id,
+                title: "New Chat",
+                updatedAt: Date(timeIntervalSince1970: 1_000),
+                selectedModel: "mlx-ask"
+            )
+        ])
+    }
+
+    func testLoadSummariesSortsByUpdatedAtDescending() throws {
+        let root = temporaryStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ConversationStore(applicationSupportDirectory: root)
+
+        let older = try store.createConversation(
+            providerBaseURL: "http://127.0.0.1:8123",
+            selectedModel: "mlx-plan",
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        let newer = try store.createConversation(
+            providerBaseURL: "http://127.0.0.1:8123",
+            selectedModel: "mlx-coding",
+            now: Date(timeIntervalSince1970: 2_000)
+        )
+
+        XCTAssertEqual(try store.loadSummaries().map(\.id), [newer.id, older.id])
+    }
+
+    func testSaveLoadPreservesConversationAndNormalisesStreamingFlags() throws {
+        let root = temporaryStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ConversationStore(applicationSupportDirectory: root)
+        var conversation = try store.createConversation(
+            providerBaseURL: "http://127.0.0.1:8123",
+            selectedModel: "mlx-ask",
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+        conversation.messages = [
+            ChatDisplayMessage(
+                id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+                role: "user",
+                content: "Please review this code",
+                createdAt: Date(timeIntervalSince1970: 1_010)
+            ),
+            ChatDisplayMessage(
+                id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+                role: "assistant",
+                content: "Partial answer",
+                createdAt: Date(timeIntervalSince1970: 1_011),
+                isStreaming: true,
+                didFail: true
+            ),
+        ]
+
+        try store.save(conversation, now: Date(timeIntervalSince1970: 1_020))
+
+        let loaded = try store.loadConversation(id: conversation.id)
+        XCTAssertEqual(loaded.title, "Please review this code")
+        XCTAssertEqual(loaded.updatedAt, Date(timeIntervalSince1970: 1_020))
+        XCTAssertEqual(loaded.providerBaseURL, "http://127.0.0.1:8123")
+        XCTAssertEqual(loaded.selectedModel, "mlx-ask")
+        XCTAssertEqual(loaded.messages.count, 2)
+        XCTAssertEqual(loaded.messages[0].content, "Please review this code")
+        XCTAssertEqual(loaded.messages[1].content, "Partial answer")
+        XCTAssertFalse(loaded.messages[1].isStreaming)
+        XCTAssertTrue(loaded.messages[1].didFail)
+    }
+
+    func testDeleteConversationRemovesFileAndIndexEntry() throws {
+        let root = temporaryStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ConversationStore(applicationSupportDirectory: root)
+        let conversation = try store.createConversation(
+            providerBaseURL: "http://127.0.0.1:8123",
+            selectedModel: "mlx-ask",
+            now: Date(timeIntervalSince1970: 1_000)
+        )
+
+        try store.deleteConversation(id: conversation.id)
+
+        XCTAssertEqual(try store.loadSummaries(), [])
+        let conversationURL = root
+            .appending(path: "Conversations", directoryHint: .isDirectory)
+            .appending(path: "\(conversation.id.uuidString).json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: conversationURL.path))
+    }
+
+    private func temporaryStoreRoot() -> URL {
+        FileManager.default.temporaryDirectory
+            .appending(path: "ConversationStoreTests-\(UUID().uuidString)", directoryHint: .isDirectory)
     }
 }
 
@@ -1022,6 +1291,49 @@ final class RecordingTransport: HTTPTransport {
         )!
 
         return (response.body, httpResponse)
+    }
+}
+
+final class StreamingRecordingTransport: HTTPStreamingTransport {
+    private let statusCode: Int
+    private let chunks: [String]
+    private(set) var requestPaths: [String] = []
+    private(set) var requestBodies: [String] = []
+
+    init(statusCode: Int, chunks: [String]) {
+        self.statusCode = statusCode
+        self.chunks = chunks
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let body = chunks.joined()
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        return (Data(body.utf8), response)
+    }
+
+    func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, Error>, HTTPURLResponse) {
+        requestPaths.append(request.url?.path ?? "")
+        requestBodies.append(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "")
+
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        let chunks = chunks
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            for chunk in chunks {
+                continuation.yield(Data(chunk.utf8))
+            }
+            continuation.finish()
+        }
+        return (stream, response)
     }
 }
 
