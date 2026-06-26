@@ -111,21 +111,33 @@ public enum ChatMessagePresentation {
         while let channelRange = text[cursor...].range(of: "<|channel|>") {
             appendPlain(text[cursor..<channelRange.lowerBound])
             let channelStart = channelRange.upperBound
-            guard let messageRange = text[channelStart...].range(of: "<|message|>") else {
-                appendPlain(text[channelRange.lowerBound...])
-                cursor = text.endIndex
-                break
+            let segmentEndRange = text[channelStart...].range(of: "<|end|>")
+            let segmentEnd = segmentEndRange?.lowerBound ?? text.endIndex
+            let segmentRange = channelStart..<segmentEnd
+
+            let channel: String
+            let messageStart: String.Index
+            if let messageRange = text[segmentRange].range(of: "<|message|>") {
+                channel = String(text[channelStart..<messageRange.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                messageStart = messageRange.upperBound
+            } else if let compactSegment = compactChannelSegment(in: text, range: segmentRange) {
+                channel = compactSegment.channel
+                messageStart = compactSegment.messageStart
+            } else {
+                appendPlain(text[channelRange.lowerBound..<segmentEnd])
+                if let segmentEndRange {
+                    cursor = segmentEndRange.upperBound
+                } else {
+                    cursor = text.endIndex
+                }
+                continue
             }
 
-            let channel = String(text[channelStart..<messageRange.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let messageStart = messageRange.upperBound
-            let messageText: String
-            if let endRange = text[messageStart...].range(of: "<|end|>") {
-                messageText = String(text[messageStart..<endRange.lowerBound])
-                cursor = endRange.upperBound
+            let messageText = String(text[messageStart..<segmentEnd])
+            if let segmentEndRange {
+                cursor = segmentEndRange.upperBound
             } else {
-                messageText = String(text[messageStart...])
                 cursor = text.endIndex
             }
 
@@ -137,6 +149,24 @@ public enum ChatMessagePresentation {
 
         appendPlain(text[cursor...])
         return segments
+    }
+
+    private static func compactChannelSegment(
+        in text: String,
+        range: Range<String.Index>
+    ) -> (channel: String, messageStart: String.Index)? {
+        let channels = ["analysis", "final", "commentary"]
+        let segment = text[range]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for channel in channels where segment.hasPrefix(channel) {
+            guard let channelEnd = text[range].range(of: channel)?.upperBound else { continue }
+            var messageStart = channelEnd
+            while messageStart < range.upperBound, text[messageStart].isWhitespace {
+                messageStart = text.index(after: messageStart)
+            }
+            return (channel, messageStart)
+        }
+        return nil
     }
 
     private static func cleanedMarkerText(_ text: String) -> String {

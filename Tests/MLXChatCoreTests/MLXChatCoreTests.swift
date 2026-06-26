@@ -675,6 +675,17 @@ final class ChatMessagePresentationTests: XCTestCase {
         XCTAssertEqual(result.reasoning, "Draft internally.")
     }
 
+    func testAssistantChannelMarkedContentWithoutMessageMarkersDoesNotLeakChannelNames() {
+        let result = ChatMessagePresentation.normalizedAssistantContent(
+            content: "<|channel|>analysisWe need to plan privately.<|end|><|start|>assistant<|channel|>final### Final answer<|end|>"
+        )
+
+        XCTAssertEqual(result.content, "### Final answer")
+        XCTAssertEqual(result.reasoning, "We need to plan privately.")
+        XCTAssertFalse(result.content.contains("analysis"))
+        XCTAssertFalse(result.content.contains("assistantfinal"))
+    }
+
     func testAssistantContentBlocksNormaliseChannelMarkedSavedContent() {
         let blocks = ChatMessagePresentation.contentBlocks(
             role: "assistant",
