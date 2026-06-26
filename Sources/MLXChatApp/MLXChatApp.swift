@@ -418,6 +418,10 @@ struct ChatBubble: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                if !isUser, let usageState = message.usageState {
+                    StreamUsageView(usageState: usageState, baseFontSize: messageFontSize)
+                }
+
                 if message.didFail {
                     Text("Reply interrupted")
                         .font(AppFont.label(messageFontSize))
@@ -434,6 +438,43 @@ struct ChatBubble: View {
             }
         }
     }
+}
+
+struct StreamUsageView: View {
+    let usageState: MLXStreamUsageState
+    let baseFontSize: Double
+
+    private var lines: [String] {
+        var values: [String] = []
+        if let limitTokens = usageState.context.limitTokens {
+            values.append("Context: \(Self.tokenFormatter.string(from: NSNumber(value: limitTokens)) ?? "\(limitTokens)")")
+        }
+        if let tokenSummary = usageState.tokenSummary {
+            values.append(tokenSummary)
+        }
+        return values
+    }
+
+    var body: some View {
+        if !lines.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "gauge.with.dots.needle.67percent")
+                    .font(AppFont.label(baseFontSize))
+                    .foregroundStyle(.secondary)
+                Text(lines.joined(separator: " - "))
+                    .font(AppFont.label(baseFontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private static let tokenFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter
+    }()
 }
 
 struct ThinkingPanel: View {
@@ -704,6 +745,33 @@ struct ProviderRoutingStatus {
     }
 }
 
+private extension MLXStreamUsageState {
+    var tokenSummary: String? {
+        guard let inputTokens = tokens.inputTokens,
+              let outputTokens = tokens.outputTokens,
+              let totalTokens = tokens.totalTokens
+        else { return nil }
+        return "Tokens: \(Self.format(inputTokens)) in / \(Self.format(outputTokens)) out / \(Self.format(totalTokens)) total"
+    }
+
+    var logDescription: String {
+        [
+            context.limitTokens.map { "context_limit=\($0)" },
+            tokens.inputTokens.map { "input=\($0)" },
+            tokens.outputTokens.map { "output=\($0)" },
+            tokens.totalTokens.map { "total=\($0)" },
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+    }
+
+    private static func format(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+}
+
 @MainActor
 final class ChatAppViewModel: ObservableObject {
     private static let appLogger = Logger(subsystem: "MLXChat", category: "app")
@@ -929,6 +997,11 @@ final class ChatAppViewModel: ObservableObject {
                     transcriptRevision += 1
                     persistActiveConversation(debounced: true)
                 }
+                if let usageState = delta.usageState {
+                    messages[index].usageState = usageState
+                    transcriptRevision += 1
+                    persistActiveConversation(debounced: true)
+                }
             }
             if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
                 messages[index].isStreaming = false
@@ -936,8 +1009,9 @@ final class ChatAppViewModel: ObservableObject {
             }
             transcriptRevision += 1
             persistActiveConversation()
-            Self.chatLogger.notice("Send finished routingAlias=\(modelForSend, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public)")
-            logChatNotice("Send finished routingAlias=\(modelForSend) status=stream replyCharacters=\(replyCharacters)")
+            let usageText = messages.first(where: { $0.id == assistantMessageID })?.usageState?.logDescription ?? "unknown"
+            Self.chatLogger.notice("Send finished routingAlias=\(modelForSend, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public) usage=\(usageText, privacy: .public)")
+            logChatNotice("Send finished routingAlias=\(modelForSend) status=stream replyCharacters=\(replyCharacters) usage=\(usageText)")
         } catch {
             if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
                 messages[index].isStreaming = false

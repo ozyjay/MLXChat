@@ -42,7 +42,9 @@ The provider accepts requests without a bearer token for local use. If a client 
 
 `POST /v1/responses` is translated by MLXDashboard into a chat-completions request before proxying upstream.
 
-`POST /v1/chat/completions` supports OpenAI-style streaming when the request body includes `"stream": true`. MLXDashboard proxies streamed responses as server-sent events with `content-type: text/event-stream`. MLXChat consumes `data:` frames, reads assistant text from `choices[0].delta.content`, and treats `data: [DONE]` as stream completion.
+`POST /v1/chat/completions` supports OpenAI-style streaming when the request body includes `"stream": true`. MLXDashboard proxies streamed responses as server-sent events with `content-type: text/event-stream`. MLXChat consumes unnamed `data:` frames, reads assistant text from `choices[0].delta.content`, and treats `data: [DONE]` as stream completion.
+
+For streamed chat requests, MLXChat opts in to MLXDashboard usage events with `"stream_options": { "include_usage": true }`. MLXDashboard may then interleave provider-owned SSE blocks named `mlx.usage`. MLXChat treats these as response metadata, not assistant text. Unknown named SSE events are ignored.
 
 Observed chat streaming frame shape:
 
@@ -50,6 +52,9 @@ Observed chat streaming frame shape:
 data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}
 
 data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}
+
+event: mlx.usage
+data: {"type":"mlx.usage","phase":"completed","model":"mlx-community/Tiny","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}
 
 data: [DONE]
 ```

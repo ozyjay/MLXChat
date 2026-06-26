@@ -335,6 +335,125 @@ final class ProviderChatCompletionTests: XCTestCase {
         ])
         XCTAssertEqual(transport.requestPaths, ["/v1/chat/completions"])
         XCTAssertTrue(transport.requestBodies.first?.contains(#""stream":true"#) == true)
+        XCTAssertTrue(transport.requestBodies.first?.contains(#""stream_options":{"include_usage":true}"#) == true)
+    }
+
+    func testCompleteChatDoesNotSendStreamOptionsForNonStreamingRequest() async throws {
+        let transport = RecordingTransport(
+            response: MockResponse(
+                statusCode: 200,
+                body: Data(#"{"id":"chat","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}"#.utf8)
+            )
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        _ = try await client.completeChat(
+            model: "mlx-ask",
+            messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+        )
+
+        XCTAssertFalse(transport.requestBodies.first?.contains("stream_options") == true)
+    }
+
+    func testStreamChatParsesMLXUsageEventsWithoutAppendingAssistantText() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"started","model":"mlx-community/Tiny","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":null,"output_tokens":null,"total_tokens":null}}"#
+                    + "\n\n",
+                #"data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}"# + "\n\n",
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"completed","model":"mlx-community/Tiny","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":10,"output_tokens":4,"total_tokens":14}}"#
+                    + "\n\n",
+                #"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+            )
+        )
+
+        XCTAssertEqual(deltas.map(\.content).joined(), "Hello")
+        XCTAssertEqual(deltas, [
+            ChatStreamDelta(
+                content: "",
+                usageState: MLXStreamUsageState(
+                    phase: "started",
+                    model: "mlx-community/Tiny",
+                    context: MLXStreamUsageContext(limitTokens: 32768),
+                    tokens: MLXStreamUsageTokens()
+                )
+            ),
+            ChatStreamDelta(content: "Hel"),
+            ChatStreamDelta(
+                content: "",
+                usageState: MLXStreamUsageState(
+                    phase: "completed",
+                    model: "mlx-community/Tiny",
+                    context: MLXStreamUsageContext(limitTokens: 32768),
+                    tokens: MLXStreamUsageTokens(inputTokens: 10, outputTokens: 4, totalTokens: 14)
+                )
+            ),
+            ChatStreamDelta(content: "lo", finishReason: "stop"),
+        ])
+    }
+
+    func testStreamChatUsageEventsPreserveNullValuesAsUnknown() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"started","model":"mlx-community/Tiny","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":null,"output_tokens":null,"total_tokens":null}}"#
+                    + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "hello")]
+            )
+        )
+
+        let usageState = try XCTUnwrap(deltas.first?.usageState)
+        XCTAssertEqual(usageState.context.limitTokens, 32768)
+        XCTAssertNil(usageState.context.usedTokens)
+        XCTAssertNil(usageState.context.remainingTokens)
+        XCTAssertNil(usageState.context.usageRatio)
+        XCTAssertNil(usageState.tokens.inputTokens)
+        XCTAssertNil(usageState.tokens.outputTokens)
+        XCTAssertNil(usageState.tokens.totalTokens)
+    }
+
+    func testStreamChatIgnoresUnknownNamedEvents() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"event: mlx.debug"# + "\n" + #"data: {"message":"ignored"}"# + "\n\n",
+                #"data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "hello")]
+            )
+        )
+
+        XCTAssertEqual(deltas, [
+            ChatStreamDelta(content: "ok", finishReason: "stop"),
+        ])
     }
 
     func testStreamChatSplitsChannelMarkedDelta() async throws {
@@ -689,6 +808,45 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(loaded.messages[1].content, "Partial answer")
         XCTAssertFalse(loaded.messages[1].isStreaming)
         XCTAssertTrue(loaded.messages[1].didFail)
+    }
+
+    func testChatDisplayMessagePreservesUsageStateAndDecodesLegacyMessages() throws {
+        let usageState = MLXStreamUsageState(
+            phase: "completed",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(
+                limitTokens: 32768,
+                usedTokens: nil,
+                remainingTokens: nil,
+                usageRatio: nil
+            ),
+            tokens: MLXStreamUsageTokens(inputTokens: 10, outputTokens: 4, totalTokens: 14)
+        )
+        let message = ChatDisplayMessage(
+            id: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+            role: "assistant",
+            content: "Done",
+            usageState: usageState
+        )
+
+        let data = try JSONEncoder().encode(message)
+        let decoded = try JSONDecoder().decode(ChatDisplayMessage.self, from: data)
+        XCTAssertEqual(decoded.usageState, usageState)
+
+        let legacyData = Data(
+            """
+            {
+              "id": "55555555-5555-5555-5555-555555555555",
+              "role": "assistant",
+              "content": "Legacy",
+              "createdAt": 1000,
+              "isStreaming": false,
+              "didFail": false
+            }
+            """.utf8
+        )
+        let legacy = try JSONDecoder().decode(ChatDisplayMessage.self, from: legacyData)
+        XCTAssertNil(legacy.usageState)
     }
 
     func testDeleteConversationRemovesFileAndIndexEntry() throws {

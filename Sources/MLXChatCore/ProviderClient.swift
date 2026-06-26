@@ -95,11 +95,18 @@ public struct ChatStreamDelta: Equatable, Sendable {
     public let content: String
     public let finishReason: String?
     public let reasoning: String?
+    public let usageState: MLXStreamUsageState?
 
-    public init(content: String, finishReason: String? = nil, reasoning: String? = nil) {
+    public init(
+        content: String,
+        finishReason: String? = nil,
+        reasoning: String? = nil,
+        usageState: MLXStreamUsageState? = nil
+    ) {
         self.content = content
         self.finishReason = finishReason
         self.reasoning = reasoning
+        self.usageState = usageState
     }
 }
 
@@ -430,16 +437,25 @@ public struct ProviderClient {
     }
 
     private func processStreamFrame(_ frame: String, yield: (ChatStreamDelta) -> Void) throws -> Bool {
-        let dataLines = frame
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .components(separatedBy: "\n")
-            .compactMap { line -> String? in
-                guard line.hasPrefix("data:") else { return nil }
-                return String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
-            }
+        let event = sseEvent(from: frame)
+        guard !event.dataLines.isEmpty else { return false }
+        let payload = event.dataLines.joined(separator: "\n")
 
-        guard !dataLines.isEmpty else { return false }
-        let payload = dataLines.joined(separator: "\n")
+        if let eventName = event.name, !eventName.isEmpty {
+            if eventName == "mlx.usage" {
+                guard let data = payload.data(using: .utf8) else {
+                    throw ProviderClientError.malformedStreamFrame(payload)
+                }
+                do {
+                    let usageState = try jsonDecoder.decode(MLXStreamUsageState.self, from: data)
+                    yield(ChatStreamDelta(content: "", usageState: usageState))
+                } catch {
+                    throw ProviderClientError.malformedStreamFrame(payload)
+                }
+            }
+            return false
+        }
+
         if payload == "[DONE]" {
             return true
         }
@@ -472,6 +488,26 @@ public struct ProviderClient {
             throw ProviderClientError.malformedStreamFrame(payload)
         }
         return false
+    }
+
+    private func sseEvent(from frame: String) -> (name: String?, dataLines: [String]) {
+        var eventName: String?
+        var dataLines: [String] = []
+        for line in frame
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .components(separatedBy: "\n")
+        {
+            if line.hasPrefix("event:") {
+                eventName = String(line.dropFirst("event:".count))
+                    .trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("data:") {
+                dataLines.append(
+                    String(line.dropFirst("data:".count))
+                        .trimmingCharacters(in: .whitespaces)
+                )
+            }
+        }
+        return (eventName, dataLines)
     }
 
     private func buildURL(path: String) throws -> URL {
@@ -710,6 +746,7 @@ public struct ProviderClient {
         let minP: Double?
         let stop: [String]?
         let mlxDiffusion: TextDiffusionOptions?
+        let streamOptions: ChatCompletionStreamOptions?
 
         init(
             model: String, messages: [ChatTranscriptMessage], stream: Bool,
@@ -725,6 +762,7 @@ public struct ProviderClient {
             self.minP = options.minP
             self.stop = options.stopSequences
             self.mlxDiffusion = options.diffusion
+            self.streamOptions = stream ? ChatCompletionStreamOptions(includeUsage: true) : nil
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -738,6 +776,15 @@ public struct ProviderClient {
             case minP = "min_p"
             case stop
             case mlxDiffusion = "mlx_diffusion"
+            case streamOptions = "stream_options"
+        }
+    }
+
+    private struct ChatCompletionStreamOptions: Encodable {
+        let includeUsage: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case includeUsage = "include_usage"
         }
     }
 

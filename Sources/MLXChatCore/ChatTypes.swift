@@ -15,6 +15,7 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
     public let role: String
     public var content: String
     public var reasoning: String?
+    public var usageState: MLXStreamUsageState?
     public let createdAt: Date
     public var isStreaming: Bool
     public var didFail: Bool
@@ -24,6 +25,7 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
         role: String,
         content: String,
         reasoning: String? = nil,
+        usageState: MLXStreamUsageState? = nil,
         createdAt: Date = Date(),
         isStreaming: Bool = false,
         didFail: Bool = false
@@ -32,9 +34,77 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
         self.role = role
         self.content = content
         self.reasoning = reasoning
+        self.usageState = usageState
         self.createdAt = createdAt
         self.isStreaming = isStreaming
         self.didFail = didFail
+    }
+}
+
+public struct MLXStreamUsageState: Codable, Equatable, Sendable {
+    public let phase: String
+    public let model: String?
+    public let context: MLXStreamUsageContext
+    public let tokens: MLXStreamUsageTokens
+
+    public init(
+        phase: String,
+        model: String? = nil,
+        context: MLXStreamUsageContext = MLXStreamUsageContext(),
+        tokens: MLXStreamUsageTokens = MLXStreamUsageTokens()
+    ) {
+        self.phase = phase
+        self.model = model
+        self.context = context
+        self.tokens = tokens
+    }
+}
+
+public struct MLXStreamUsageContext: Codable, Equatable, Sendable {
+    public let limitTokens: Int?
+    public let usedTokens: Int?
+    public let remainingTokens: Int?
+    public let usageRatio: Double?
+
+    public init(
+        limitTokens: Int? = nil,
+        usedTokens: Int? = nil,
+        remainingTokens: Int? = nil,
+        usageRatio: Double? = nil
+    ) {
+        self.limitTokens = limitTokens
+        self.usedTokens = usedTokens
+        self.remainingTokens = remainingTokens
+        self.usageRatio = usageRatio
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case limitTokens = "limit_tokens"
+        case usedTokens = "used_tokens"
+        case remainingTokens = "remaining_tokens"
+        case usageRatio = "usage_ratio"
+    }
+}
+
+public struct MLXStreamUsageTokens: Codable, Equatable, Sendable {
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let totalTokens: Int?
+
+    public init(
+        inputTokens: Int? = nil,
+        outputTokens: Int? = nil,
+        totalTokens: Int? = nil
+    ) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.totalTokens = totalTokens
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case totalTokens = "total_tokens"
     }
 }
 
