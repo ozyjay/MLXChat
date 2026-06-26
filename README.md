@@ -48,11 +48,11 @@ The app:
 - checks provider health with `GET /health`;
 - lists models with `GET /v1/models`;
 - overlays richer capability metadata from `GET /provider/v1/models` when available, falling back to legacy `GET /api/v0/models` for older local providers, while only showing models advertised by `GET /v1/models`;
-- selects `mlx-ask` by default when it is advertised, otherwise the first model;
+- leaves model and role selection to MLXDashboard, sending internal routing aliases such as `mlx-ask`, `mlx-plan`, or `mlx-coding` as Dashboard directs;
+- shows compact provider-routing status with the effective running model and any Dashboard fallback reason;
 - streams normal chat and text diffusion chat requests from `POST /v1/chat/completions`;
-- labels normal chat, text diffusion, and unsupported models in the sidebar;
 - persists multiple local conversations under Application Support as JSON files;
-- restores conversation-specific local base URL, selected model, and transcript history;
+- restores conversation-specific local base URL and transcript history;
 - accepts only localhost provider URLs such as `http://127.0.0.1:8123`, `http://localhost:8123`, or `http://[::1]:8123`.
 
 If MLXDashboard is not running, the app should show a disconnected state rather than crash.
@@ -70,7 +70,7 @@ They also emit Unified Logging entries under the `MLXChat` subsystem. Use Consol
 log stream --predicate 'subsystem == "MLXChat"'
 ```
 
-Default-visible logs include provider health, model counts, selected model IDs, chat send start/finish, request failures, status codes, and response snippets for failures. Debug logs add lower-level request start/finish details. Logs do not include full prompts, full assistant replies, or raw successful response bodies.
+Default-visible logs include provider health, model counts, routing aliases, chat send start/finish, request failures, status codes, and response snippets for failures. Debug logs add lower-level request start/finish details. Logs do not include full prompts, full assistant replies, or raw successful response bodies.
 
 Saved conversations are stored locally in:
 

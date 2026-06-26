@@ -52,6 +52,10 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
     public let modelType: String?
     public let supportsStreaming: Bool?
     public let supportedGenerationModes: [String]?
+    public let effectiveModel: String?
+    public let routingState: String?
+    public let effectivePort: Int?
+    public let fallbackReason: String?
 
     public var isSendableTextModel: Bool {
         capability.isSendableTextModel
@@ -101,7 +105,11 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
         runtime: String? = nil,
         modelType: String? = nil,
         supportsStreaming: Bool? = nil,
-        supportedGenerationModes: [String]? = nil
+        supportedGenerationModes: [String]? = nil,
+        effectiveModel: String? = nil,
+        routingState: String? = nil,
+        effectivePort: Int? = nil,
+        fallbackReason: String? = nil
     ) {
         self.id = id
         self.capability = capability
@@ -121,6 +129,10 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
         self.modelType = modelType
         self.supportsStreaming = supportsStreaming
         self.supportedGenerationModes = supportedGenerationModes
+        self.effectiveModel = effectiveModel
+        self.routingState = routingState
+        self.effectivePort = effectivePort
+        self.fallbackReason = fallbackReason
     }
 
     public func mergingMetadata(from other: ProviderModelMetadata) -> ProviderModelMetadata {
@@ -142,7 +154,11 @@ public struct ProviderModelMetadata: Equatable, Sendable, Identifiable {
             runtime: other.runtime ?? runtime,
             modelType: other.modelType ?? modelType,
             supportsStreaming: other.supportsStreaming ?? supportsStreaming,
-            supportedGenerationModes: other.supportedGenerationModes ?? supportedGenerationModes
+            supportedGenerationModes: other.supportedGenerationModes ?? supportedGenerationModes,
+            effectiveModel: other.effectiveModel ?? effectiveModel,
+            routingState: other.routingState ?? routingState,
+            effectivePort: other.effectivePort ?? effectivePort,
+            fallbackReason: other.fallbackReason ?? fallbackReason
         )
     }
 }

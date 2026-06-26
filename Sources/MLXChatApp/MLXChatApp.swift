@@ -18,7 +18,6 @@ struct MLXChatApp: App {
 
 struct ContentView: View {
     @AppStorage("MLXChat.baseURL") private var storedBaseURL = "http://127.0.0.1:8123"
-    @AppStorage("MLXChat.selectedModel") private var storedSelectedModel = ""
     @StateObject private var viewModel = ChatAppViewModel()
     @FocusState private var focusedField: FocusedAppField?
 
@@ -34,15 +33,12 @@ struct ContentView: View {
         }
         .background(WindowActivationView())
         .onAppear {
-            viewModel.configure(baseURLText: storedBaseURL, selectedModel: storedSelectedModel)
+            viewModel.configure(baseURLText: storedBaseURL)
             AppWindowActivator.activateAfterWindowCreation()
             focusComposerAfterLaunch()
         }
         .onChange(of: viewModel.baseURLText) { value in
             storedBaseURL = value
-        }
-        .onChange(of: viewModel.selectedModel) { value in
-            storedSelectedModel = value
         }
     }
 
@@ -90,34 +86,6 @@ struct SidebarView: View {
             Divider()
 
             ConversationListView(viewModel: viewModel)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Models")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                if viewModel.models.isEmpty {
-                    Text("No models")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 12)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(viewModel.models) { model in
-                                ModelRow(
-                                    model: model,
-                                    isSelected: model.id == viewModel.selectedModel
-                                ) {
-                                    viewModel.selectModel(model.id)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             Spacer()
         }
@@ -191,7 +159,7 @@ struct ConversationRow: View {
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Text(conversation.selectedModel.isEmpty ? "No model" : conversation.selectedModel)
+                    Text(conversation.updatedAt.formatted(date: .abbreviated, time: .shortened))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -211,145 +179,6 @@ struct ConversationRow: View {
         .padding(.vertical, 6)
         .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-}
-
-struct ModelRow: View {
-    let model: ProviderModelMetadata
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(model.primaryDisplayName)
-                        .font(.callout)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-
-                    if let secondaryText = model.secondaryDisplayText {
-                        Text(secondaryText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    ModelTagRow(model: model)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-}
-
-struct ModelTagRow: View {
-    let model: ProviderModelMetadata
-
-    var body: some View {
-        FlowLayout(spacing: 4) {
-            CapabilityBadge(capability: model.capability)
-
-            ForEach(model.displayTags, id: \.self) { tag in
-                Text(tag)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-            }
-        }
-    }
-}
-
-struct FlowLayout: Layout {
-    let spacing: CGFloat
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? 0
-        let rows = rows(in: width, subviews: subviews)
-        return CGSize(width: width, height: rows.height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX {
-                x = bounds.minX
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-    }
-
-    private func rows(in width: CGFloat, subviews: Subviews) -> (height: CGFloat, width: CGFloat) {
-        var currentWidth: CGFloat = 0
-        var currentHeight: CGFloat = 0
-        var totalHeight: CGFloat = 0
-        var maxWidth: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if currentWidth > 0, currentWidth + size.width > width {
-                totalHeight += currentHeight + spacing
-                maxWidth = max(maxWidth, currentWidth - spacing)
-                currentWidth = 0
-                currentHeight = 0
-            }
-            currentWidth += size.width + spacing
-            currentHeight = max(currentHeight, size.height)
-        }
-
-        totalHeight += currentHeight
-        maxWidth = max(maxWidth, currentWidth - spacing)
-        return (totalHeight, maxWidth)
-    }
-}
-
-struct CapabilityBadge: View {
-    let capability: ProviderModelCapability
-
-    var body: some View {
-        Text(capability.displayName)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(foregroundColour)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(backgroundColour)
-            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-    }
-
-    private var foregroundColour: Color {
-        switch capability {
-        case .chatText:
-            return .blue
-        case .diffusionText:
-            return .purple
-        case .unsupported:
-            return .orange
-        }
-    }
-
-    private var backgroundColour: Color {
-        foregroundColour.opacity(0.12)
     }
 }
 
@@ -389,11 +218,6 @@ struct ChatPaneView: View {
                 transcriptRevision: viewModel.transcriptRevision
             )
 
-            if let modelNotice = viewModel.selectedModelNotice {
-                Divider()
-                ModelNoticeBanner(message: modelNotice)
-            }
-
             if let errorMessage = viewModel.errorMessage {
                 Divider()
                 ErrorBanner(message: errorMessage)
@@ -413,14 +237,14 @@ struct ChatHeaderView: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(viewModel.selectedModel.isEmpty ? "No model selected" : viewModel.selectedModel)
+                Text(viewModel.routingStatus.title)
                     .font(.headline)
                     .lineLimit(1)
 
-                Text(viewModel.selectedModelSubtitle)
+                Text(viewModel.routingStatus.subtitle(baseURLText: viewModel.baseURLText))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
 
             Spacer()
@@ -598,23 +422,39 @@ struct ErrorBanner: View {
     }
 }
 
-struct ModelNoticeBanner: View {
-    let message: String
+struct ProviderRoutingStatus {
+    var requestedAlias = "mlx-ask"
+    var effectiveModel: String?
+    var mode: String?
+    var routingState: String?
+    var fallbackReason: String?
+    var adviceReason: String?
+    var adviceConfidence: Double?
 
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "info.circle.fill")
-                .foregroundStyle(.blue)
-
-            Text(message)
-                .font(.callout)
-                .lineLimit(3)
-
-            Spacer(minLength: 0)
+    var title: String {
+        guard let effectiveModel, !effectiveModel.isEmpty else {
+            return "Dashboard routing"
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .background(Color.blue.opacity(0.1))
+        return effectiveModel
+    }
+
+    func subtitle(baseURLText: String) -> String {
+        var parts: [String] = []
+        if let mode, !mode.isEmpty {
+            parts.append("\(mode.capitalized) route")
+        } else {
+            parts.append("Provider routing")
+        }
+        parts.append("via \(requestedAlias)")
+        if let fallbackReason, !fallbackReason.isEmpty {
+            parts.append(fallbackReason)
+        } else if let routingState, !routingState.isEmpty, routingState != "direct" {
+            parts.append(routingState.replacingOccurrences(of: "_", with: " "))
+        } else if let adviceReason, !adviceReason.isEmpty {
+            parts.append(adviceReason)
+        }
+        parts.append(baseURLText)
+        return parts.joined(separator: " - ")
     }
 }
 
@@ -626,7 +466,8 @@ final class ChatAppViewModel: ObservableObject {
     @Published var baseURLText = "http://127.0.0.1:8123"
     @Published var healthState: ProviderHealthState = .unknown
     @Published var models: [ProviderModelMetadata] = []
-    @Published var selectedModel = ""
+    @Published var requestModelAlias = "mlx-ask"
+    @Published var routingStatus = ProviderRoutingStatus()
     @Published var messages: [ChatDisplayMessage] = []
     @Published var conversationSummaries: [ConversationSummary] = []
     @Published var activeConversationID: UUID?
@@ -645,43 +486,21 @@ final class ChatAppViewModel: ObservableObject {
         ProviderModelCatalog(models: models)
     }
 
-    var selectedModelSubtitle: String {
-        guard let model = catalog.model(id: selectedModel) else {
-            return baseURLText
-        }
-        if let resolvedModel = model.resolvedModel {
-            return "\(resolvedModel) - \(baseURLText)"
-        }
-        return "\(model.capability.displayName) - \(baseURLText)"
-    }
-
-    var selectedModelNotice: String? {
-        guard let model = catalog.model(id: selectedModel) else { return nil }
-        if let reason = model.capability.unsupportedReason {
-            return "This model cannot be used for chat: \(reason)"
-        }
-        if model.capability == .diffusionText {
-            return "Text diffusion model selected. Responses are still text and use the same chat transcript."
-        }
-        return nil
-    }
-
     var canSend: Bool {
         !isSending
             && !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !selectedModel.isEmpty
+            && !requestModelAlias.isEmpty
             && LocalProviderURLValidator.providerURL(from: baseURLText) != nil
-            && catalog.canSend(with: selectedModel)
+            && catalog.canSend(with: requestModelAlias)
     }
 
-    func configure(baseURLText: String, selectedModel: String) {
+    func configure(baseURLText: String) {
         guard !hasConfigured else { return }
         hasConfigured = true
         self.baseURLText = baseURLText
-        self.selectedModel = selectedModel
-        loadInitialConversation(providerBaseURL: baseURLText, selectedModel: selectedModel)
-        Self.appLogger.notice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText), privacy: .public) persistedModel=\(selectedModel, privacy: .public)")
-        logAppNotice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText)) persistedModel=\(selectedModel)")
+        loadInitialConversation(providerBaseURL: baseURLText)
+        Self.appLogger.notice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText), privacy: .public)")
+        logAppNotice("App configured baseURL=\(self.safeBaseURLDescription(from: baseURLText))")
 
         Task {
             await refreshProvider()
@@ -713,10 +532,11 @@ final class ChatAppViewModel: ObservableObject {
 
             let catalog = try await fetchModelCatalog(using: client)
             models = catalog.models
-            selectedModel = catalog.defaultSelection(persistedSelection: selectedModel)
+            requestModelAlias = preferredRoutingAlias(in: catalog)
+            updateRoutingStatus(alias: requestModelAlias)
             persistActiveConversation()
-            Self.appLogger.notice("Provider refresh finished models=\(self.models.count, privacy: .public) selectedModel=\(self.selectedModel, privacy: .public)")
-            logAppNotice("Provider refresh finished models=\(self.models.count) selectedModel=\(self.selectedModel)")
+            Self.appLogger.notice("Provider refresh finished models=\(self.models.count, privacy: .public) routingAlias=\(self.requestModelAlias, privacy: .public)")
+            logAppNotice("Provider refresh finished models=\(self.models.count) routingAlias=\(self.requestModelAlias)")
         } catch {
             healthState = .disconnected
             models = []
@@ -728,20 +548,12 @@ final class ChatAppViewModel: ObservableObject {
         isRefreshing = false
     }
 
-    func selectModel(_ modelID: String) {
-        selectedModel = modelID
-        persistActiveConversation()
-        let capability = catalog.model(id: modelID)?.capability.displayName ?? "Unknown"
-        Self.appLogger.notice("Model selected id=\(modelID, privacy: .public) capability=\(capability, privacy: .public)")
-        logAppNotice("Model selected id=\(modelID) capability=\(capability)")
-    }
-
     func newConversation() {
         guard !isSending else { return }
         do {
             let conversation = try conversationStore.createConversation(
                 providerBaseURL: baseURLText,
-                selectedModel: selectedModel
+                selectedModel: ""
             )
             applyConversation(conversation)
             conversationSummaries = try conversationStore.loadSummaries()
@@ -782,7 +594,7 @@ final class ChatAppViewModel: ObservableObject {
                 } else {
                     let conversation = try conversationStore.createConversation(
                         providerBaseURL: baseURLText,
-                        selectedModel: selectedModel
+                        selectedModel: ""
                     )
                     applyConversation(conversation)
                     conversationSummaries = try conversationStore.loadSummaries()
@@ -806,28 +618,27 @@ final class ChatAppViewModel: ObservableObject {
             logChatError("Send blocked invalidBaseURL=\(self.safeBaseURLDescription(from: self.baseURLText))")
             return
         }
-        guard !selectedModel.isEmpty else {
-            errorMessage = "Select a model."
-            Self.chatLogger.error("Send blocked noModelSelected")
-            logChatError("Send blocked noModelSelected")
+        guard !requestModelAlias.isEmpty else {
+            errorMessage = "Dashboard did not advertise a sendable routing alias."
+            Self.chatLogger.error("Send blocked noRoutingAlias")
+            logChatError("Send blocked noRoutingAlias")
             return
         }
-        guard catalog.canSend(with: selectedModel) else {
-            errorMessage = catalog.model(id: selectedModel)?.capability.unsupportedReason
-                ?? "Selected model cannot be used for text chat."
-            Self.chatLogger.error("Send blocked unsupportedModel=\(self.selectedModel, privacy: .public) reason=\(self.errorMessage ?? "unknown", privacy: .public)")
-            logChatError("Send blocked unsupportedModel=\(self.selectedModel) reason=\(self.errorMessage ?? "unknown")")
+        guard catalog.canSend(with: requestModelAlias) else {
+            errorMessage = catalog.model(id: requestModelAlias)?.capability.unsupportedReason
+                ?? "Dashboard routing alias cannot be used for text chat."
+            Self.chatLogger.error("Send blocked unsupportedRoutingAlias=\(self.requestModelAlias, privacy: .public) reason=\(self.errorMessage ?? "unknown", privacy: .public)")
+            logChatError("Send blocked unsupportedRoutingAlias=\(self.requestModelAlias) reason=\(self.errorMessage ?? "unknown")")
             return
         }
 
         errorMessage = nil
         isSending = true
 
-        let originalModel = selectedModel
-        let modelForSend = await resolveModelForSend(prompt: prompt, baseURL: baseURL)
-        if modelForSend != selectedModel {
-            selectedModel = modelForSend
-        }
+        let baselineAlias = requestModelAlias
+        let modelForSend = await resolveAliasForSend(prompt: prompt, baseURL: baseURL)
+        requestModelAlias = modelForSend
+        updateRoutingStatus(alias: modelForSend)
 
         let userMessage = ChatDisplayMessage(role: "user", content: prompt)
         messages.append(userMessage)
@@ -849,8 +660,8 @@ final class ChatAppViewModel: ObservableObject {
         let client = ProviderClient(baseURL: baseURL, timeout: 60)
         do {
             let capability = catalog.model(id: modelForSend)?.capability.displayName ?? "Unknown"
-            Self.chatLogger.notice("Send started model=\(modelForSend, privacy: .public) originalModel=\(originalModel, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
-            logChatNotice("Send started model=\(modelForSend) originalModel=\(originalModel) capability=\(capability) transcriptMessages=\(self.messages.count) promptCharacters=\(prompt.count)")
+            Self.chatLogger.notice("Send started routingAlias=\(modelForSend, privacy: .public) baselineAlias=\(baselineAlias, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
+            logChatNotice("Send started routingAlias=\(modelForSend) baselineAlias=\(baselineAlias) capability=\(capability) transcriptMessages=\(self.messages.count) promptCharacters=\(prompt.count)")
             var replyCharacters = 0
             for try await delta in client.streamChat(model: modelForSend, messages: transcript) {
                 guard let index = messages.firstIndex(where: { $0.id == assistantMessageID }) else {
@@ -869,8 +680,8 @@ final class ChatAppViewModel: ObservableObject {
             }
             transcriptRevision += 1
             persistActiveConversation()
-            Self.chatLogger.notice("Send finished model=\(modelForSend, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public)")
-            logChatNotice("Send finished model=\(modelForSend) status=stream replyCharacters=\(replyCharacters)")
+            Self.chatLogger.notice("Send finished routingAlias=\(modelForSend, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public)")
+            logChatNotice("Send finished routingAlias=\(modelForSend) status=stream replyCharacters=\(replyCharacters)")
         } catch {
             if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
                 messages[index].isStreaming = false
@@ -879,49 +690,32 @@ final class ChatAppViewModel: ObservableObject {
             transcriptRevision += 1
             persistActiveConversation()
             errorMessage = error.localizedDescription
-            Self.chatLogger.error("Send failed model=\(self.selectedModel, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            logChatError("Send failed model=\(self.selectedModel) error=\(error.localizedDescription)")
+            Self.chatLogger.error("Send failed routingAlias=\(self.requestModelAlias, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+            logChatError("Send failed routingAlias=\(self.requestModelAlias) error=\(error.localizedDescription)")
         }
 
         isSending = false
     }
 
-    private func resolveModelForSend(prompt: String, baseURL: URL) async -> String {
+    private func resolveAliasForSend(prompt: String, baseURL: URL) async -> String {
+        let baselineAlias = requestModelAlias
+        guard catalog.supportsModeAdvice(baseURL: baseURL) else {
+            return baselineAlias
+        }
+
         let adviceClient = ProviderClient(baseURL: baseURL, timeout: 1.5)
-        return await ModeAdviceCoordinator.resolveModelForSend(
-            selectedModel: selectedModel,
-            latestPrompt: prompt,
-            catalog: catalog,
-            baseURL: baseURL,
-            adviceProvider: { input, selectedModel in
-                try await adviceClient.fetchModeAdvice(input: input, selectedModel: selectedModel)
-            },
-            userDecision: { prompt in
-                self.confirmModeSwitch(prompt)
-            }
-        )
-    }
-
-    private func confirmModeSwitch(_ prompt: ModeAdviceSwitchPrompt) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Switch modes?"
-
-        var details = [
-            "Current model: \(prompt.currentModel)",
-            "Suggested mode: \(prompt.suggestedMode)",
-        ]
-        if let confidence = prompt.confidencePercent {
-            details.append("Confidence: \(confidence)%")
+        do {
+            let advice = try await adviceClient.fetchModeAdvice(
+                input: prompt,
+                selectedModel: baselineAlias
+            )
+            let suggestedAlias = ModeAdviceCoordinator.alias(for: advice.suggestedMode)
+            let alias = suggestedAlias.flatMap { catalog.canSend(with: $0) ? $0 : nil } ?? baselineAlias
+            updateRoutingStatus(alias: alias, advice: advice)
+            return alias
+        } catch {
+            return baselineAlias
         }
-        if let reason = prompt.reason, !reason.isEmpty {
-            details.append("Reason: \(reason)")
-        }
-        alert.informativeText = details.joined(separator: "\n")
-        alert.addButton(withTitle: "Use \(prompt.suggestedModel)")
-        alert.addButton(withTitle: "Keep \(prompt.currentModel)")
-
-        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func clearTranscript() {
@@ -933,7 +727,7 @@ final class ChatAppViewModel: ObservableObject {
         logChatNotice("Transcript cleared")
     }
 
-    private func loadInitialConversation(providerBaseURL: String, selectedModel: String) {
+    private func loadInitialConversation(providerBaseURL: String) {
         do {
             conversationSummaries = try conversationStore.loadSummaries()
             if let firstSummary = conversationSummaries.first {
@@ -943,7 +737,7 @@ final class ChatAppViewModel: ObservableObject {
 
             let conversation = try conversationStore.createConversation(
                 providerBaseURL: providerBaseURL,
-                selectedModel: selectedModel
+                selectedModel: ""
             )
             applyConversation(conversation)
             conversationSummaries = try conversationStore.loadSummaries()
@@ -959,7 +753,6 @@ final class ChatAppViewModel: ObservableObject {
         activeConversation = conversation
         activeConversationID = conversation.id
         baseURLText = conversation.providerBaseURL
-        selectedModel = conversation.selectedModel
         messages = conversation.messages
         transcriptRevision += 1
     }
@@ -981,7 +774,7 @@ final class ChatAppViewModel: ObservableObject {
     private func persistActiveConversationNow() {
         guard var conversation = activeConversation else { return }
         conversation.providerBaseURL = baseURLText
-        conversation.selectedModel = selectedModel
+        conversation.selectedModel = ""
         conversation.messages = messages
         do {
             try conversationStore.save(conversation)
@@ -1006,6 +799,26 @@ final class ChatAppViewModel: ObservableObject {
             logAppWarning("Model metadata unavailable; falling back to advertised models only error=\(error.localizedDescription)")
             return ProviderModelCatalog(models: advertisedModels)
         }
+    }
+
+    private func preferredRoutingAlias(in catalog: ProviderModelCatalog) -> String {
+        for alias in ["mlx-ask", "mlx-plan", "mlx-coding"] where catalog.canSend(with: alias) {
+            return alias
+        }
+        return catalog.models.first { $0.isSendableTextModel }?.id ?? ""
+    }
+
+    private func updateRoutingStatus(alias: String, advice: ProviderModeAdvice? = nil) {
+        let model = catalog.model(id: alias)
+        routingStatus = ProviderRoutingStatus(
+            requestedAlias: alias,
+            effectiveModel: model?.effectiveModel ?? model?.resolvedModel,
+            mode: model?.role ?? advice?.suggestedMode,
+            routingState: model?.routingState,
+            fallbackReason: model?.fallbackReason,
+            adviceReason: advice?.reason,
+            adviceConfidence: advice?.confidence
+        )
     }
 
     private func safeBaseURLDescription(from text: String) -> String {

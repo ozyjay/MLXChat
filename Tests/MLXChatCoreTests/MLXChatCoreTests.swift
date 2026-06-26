@@ -409,6 +409,29 @@ final class ChatMessagePresentationTests: XCTestCase {
 }
 
 final class ConversationStoreTests: XCTestCase {
+    func testLoadLegacySummaryWithSelectedModelStillDecodes() throws {
+        let summaryID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+        let data = Data(
+            """
+            [
+              {
+                "id": "\(summaryID.uuidString)",
+                "title": "Legacy chat",
+                "updatedAt": 1000,
+                "selectedModel": "mlx-plan"
+              }
+            ]
+            """.utf8
+        )
+
+        let summaries = try JSONDecoder().decode([ConversationSummary].self, from: data)
+
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries.first?.id, summaryID)
+        XCTAssertEqual(summaries.first?.title, "Legacy chat")
+        XCTAssertEqual(summaries.first?.selectedModel, "mlx-plan")
+    }
+
     func testCreateConversationWritesIndexAndConversationFile() throws {
         let root = temporaryStoreRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -597,6 +620,66 @@ final class ProviderModeAdviceTests: XCTestCase {
         XCTAssertFalse(transport.requestBodies[0].contains("older transcript text"))
         XCTAssertTrue(transport.requestBodies[1].contains(#""model":"mlx-plan""#))
         XCTAssertFalse(transport.requestBodies[1].contains("mlx-community"))
+    }
+
+    func testAutomaticModeAdviceUsesSuggestedAliasWithoutPrompting() async throws {
+        let catalog = mlxModeAdviceCatalog()
+
+        let modelID = await ModeAdviceCoordinator.resolveAutomaticAliasForSend(
+            baselineAlias: "mlx-ask",
+            latestPrompt: "implement this feature",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { selectedPrompt, selectedModel in
+                XCTAssertEqual(selectedPrompt, "implement this feature")
+                XCTAssertEqual(selectedModel, "mlx-ask")
+                return ProviderModeAdvice(
+                    suggestedMode: "coding",
+                    confidence: 0.91,
+                    shouldSuggestSwitch: true,
+                    currentMode: "ask",
+                    reason: "Coding request."
+                )
+            }
+        )
+
+        XCTAssertEqual(modelID, "mlx-coding")
+    }
+
+    func testAutomaticModeAdviceFallsBackToBaselineForUnknownAdvice() async throws {
+        let catalog = mlxModeAdviceCatalog()
+
+        let modelID = await ModeAdviceCoordinator.resolveAutomaticAliasForSend(
+            baselineAlias: "mlx-ask",
+            latestPrompt: "hello",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in
+                ProviderModeAdvice(
+                    suggestedMode: "unknown",
+                    confidence: 0.2,
+                    shouldSuggestSwitch: false,
+                    currentMode: "ask",
+                    reason: "No clear mode."
+                )
+            }
+        )
+
+        XCTAssertEqual(modelID, "mlx-ask")
+    }
+
+    func testAutomaticModeAdviceFallsBackToBaselineWhenAdviceFails() async throws {
+        let catalog = mlxModeAdviceCatalog()
+
+        let modelID = await ModeAdviceCoordinator.resolveAutomaticAliasForSend(
+            baselineAlias: "mlx-ask",
+            latestPrompt: "plan this",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in throw URLError(.timedOut) }
+        )
+
+        XCTAssertEqual(modelID, "mlx-ask")
     }
 
     func testHighConfidencePlanAdviceBuildsSwitchPromptAndAcceptingUsesPlanAlias() async throws {
@@ -842,6 +925,31 @@ final class ProviderModelMetadataTests: XCTestCase {
         XCTAssertEqual(model.modelFamily, "chat")
         XCTAssertEqual(model.state, "loaded")
         XCTAssertEqual(model.maxContextLength, 32768)
+    }
+
+    func testFetchModelMetadataParsesDashboardRoutingMetadata() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-coding","type":"alias","role":"coding","generation_type":"text","model_family":"chat","state":"loaded","resolved_model":"mlx-community/Coder","effective_model":"mlx-community/Gemma","routing_state":"active_model_fallback","effective_port":8124,"fallback_reason":"role server unavailable; using active model"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+        let model = try XCTUnwrap(result.models.first)
+
+        XCTAssertEqual(model.id, "mlx-coding")
+        XCTAssertEqual(model.resolvedModel, "mlx-community/Coder")
+        XCTAssertEqual(model.effectiveModel, "mlx-community/Gemma")
+        XCTAssertEqual(model.routingState, "active_model_fallback")
+        XCTAssertEqual(model.effectivePort, 8124)
+        XCTAssertEqual(model.fallbackReason, "role server unavailable; using active model")
     }
 
     func testChatRequestsUseAliasIDNotResolvedModelID() async throws {

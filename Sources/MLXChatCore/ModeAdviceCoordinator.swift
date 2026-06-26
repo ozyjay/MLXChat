@@ -53,6 +53,30 @@ public struct ModeAdviceSwitchPrompt: Equatable, Sendable {
 }
 
 public enum ModeAdviceCoordinator {
+    public static func resolveAutomaticAliasForSend(
+        baselineAlias: String,
+        latestPrompt: String,
+        catalog: ProviderModelCatalog,
+        baseURL: URL,
+        adviceProvider: (String, String) async throws -> ProviderModeAdvice
+    ) async -> String {
+        guard catalog.supportsModeAdvice(baseURL: baseURL) else {
+            return baselineAlias
+        }
+
+        do {
+            let advice = try await adviceProvider(latestPrompt, baselineAlias)
+            guard let suggestedAlias = alias(for: advice.suggestedMode),
+                  catalog.canSend(with: suggestedAlias)
+            else {
+                return baselineAlias
+            }
+            return suggestedAlias
+        } catch {
+            return baselineAlias
+        }
+    }
+
     public static func resolveModelForSend(
         selectedModel: String,
         latestPrompt: String,

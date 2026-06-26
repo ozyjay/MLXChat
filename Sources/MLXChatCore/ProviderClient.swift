@@ -508,6 +508,10 @@ public struct ProviderClient {
         let modelType: String?
         let supportsStreaming: Bool?
         let supportedGenerationModes: [String]?
+        let effectiveModel: String?
+        let routingState: String?
+        let effectivePort: Int?
+        let fallbackReason: String?
 
         var metadata: ProviderModelMetadata {
             ProviderModelMetadata(
@@ -528,7 +532,11 @@ public struct ProviderClient {
                 runtime: runtime,
                 modelType: modelType,
                 supportsStreaming: supportsStreaming,
-                supportedGenerationModes: supportedGenerationModes
+                supportedGenerationModes: supportedGenerationModes,
+                effectiveModel: effectiveModel,
+                routingState: routingState,
+                effectivePort: effectivePort,
+                fallbackReason: fallbackReason
             )
         }
 
@@ -563,6 +571,10 @@ public struct ProviderClient {
             case modelType = "model_type"
             case supportsStreaming = "supports_streaming"
             case supportedGenerationModes = "supported_generation_modes"
+            case effectiveModel = "effective_model"
+            case routingState = "routing_state"
+            case effectivePort = "effective_port"
+            case fallbackReason = "fallback_reason"
         }
     }
 
@@ -589,6 +601,10 @@ public struct ProviderClient {
         let modelType: String?
         let supportsStreaming: Bool?
         let supportedGenerationModes: [String]?
+        let effectiveModel: String?
+        let routingState: String?
+        let effectivePort: Int?
+        let fallbackReason: String?
         let reason: String?
         let unsupportedReason: String?
         let notInstalledReason: String?
@@ -612,7 +628,11 @@ public struct ProviderClient {
                 runtime: runtime,
                 modelType: modelType,
                 supportsStreaming: supportsStreaming,
-                supportedGenerationModes: supportedGenerationModes
+                supportedGenerationModes: supportedGenerationModes,
+                effectiveModel: effectiveModel,
+                routingState: routingState,
+                effectivePort: effectivePort,
+                fallbackReason: fallbackReason
             )
         }
 
@@ -650,6 +670,10 @@ public struct ProviderClient {
             case modelType = "model_type"
             case supportsStreaming = "supports_streaming"
             case supportedGenerationModes = "supported_generation_modes"
+            case effectiveModel = "effective_model"
+            case routingState = "routing_state"
+            case effectivePort = "effective_port"
+            case fallbackReason = "fallback_reason"
             case reason
             case unsupportedReason = "unsupported_reason"
             case notInstalledReason = "not_installed_reason"

@@ -98,6 +98,7 @@ MLXDashboard also exposes Android Studio/Ollama-style compatibility routes:
 Observed compatibility behaviour:
 
 - `/provider/v1/models` returns model metadata with fields such as `id`, `object`, `type`, `publisher`, `compatibility_type`, `state`, and `max_context_length`.
+- Alias metadata may include Dashboard routing fields such as `effective_model`, `routing_state`, `effective_port`, and `fallback_reason`. MLXChat uses these fields as display-only provider-routing status so users can see which model Dashboard is actually using and why.
 - `/api/v0/models` is a legacy alias for older local clients. MLXChat uses it only as a fallback when `/provider/v1/models` returns 404 or is unavailable.
 - `/api/tags` and `/api/ps` advertise the aliases and active model in Ollama-style response shapes.
 - `/api/version` returns version `0.0.0`.
