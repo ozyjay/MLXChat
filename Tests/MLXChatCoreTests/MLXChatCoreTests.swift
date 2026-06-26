@@ -523,6 +523,30 @@ final class ChatMessagePresentationTests: XCTestCase {
         ])
     }
 
+    func testAssistantContentParsesPipeTablesForRendering() {
+        let blocks = ChatMessagePresentation.contentBlocks(
+            role: "assistant",
+            content: """
+            | Phase | Goal | Time |
+            | --- | --- | ---: |
+            | Setup | Create repo | 5 min |
+            | Polish | Manual tests | 20 min |
+            """
+        )
+
+        XCTAssertEqual(blocks, [
+            ChatContentBlock(
+                kind: .table,
+                text: "",
+                tableRows: [
+                    ["Phase", "Goal", "Time"],
+                    ["Setup", "Create repo", "5 min"],
+                    ["Polish", "Manual tests", "20 min"],
+                ]
+            ),
+        ])
+    }
+
     func testAssistantChannelMarkedContentSplitsReasoningAndAnswer() {
         let result = ChatMessagePresentation.normalizedAssistantContent(
             content: "<|channel|>analysis<|message|>Draft internally.<|end|><|channel|>final<|message|>Final **answer**.<|end|>"

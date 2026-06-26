@@ -3,6 +3,32 @@ import MLXChatCore
 import OSLog
 import SwiftUI
 
+private enum AppFont {
+    static func body(_ baseSize: Double, weight: Font.Weight = .regular) -> Font {
+        .system(size: baseSize, weight: weight)
+    }
+
+    static func title(_ baseSize: Double) -> Font {
+        .system(size: baseSize + 8, weight: .semibold)
+    }
+
+    static func headline(_ baseSize: Double) -> Font {
+        .system(size: baseSize + 2, weight: .semibold)
+    }
+
+    static func label(_ baseSize: Double, weight: Font.Weight = .regular) -> Font {
+        .system(size: max(baseSize - 2, 10), weight: weight)
+    }
+
+    static func small(_ baseSize: Double, weight: Font.Weight = .regular) -> Font {
+        .system(size: max(baseSize - 3, 9), weight: weight)
+    }
+
+    static func code(_ baseSize: Double) -> Font {
+        .system(size: max(baseSize - 1, 11), design: .monospaced)
+    }
+}
+
 @main
 struct MLXChatApp: App {
     @NSApplicationDelegateAdaptor(AppLaunchCoordinator.self) private var appDelegate
@@ -37,6 +63,7 @@ struct MLXChatApp: App {
 
 struct ContentView: View {
     @AppStorage("MLXChat.baseURL") private var storedBaseURL = "http://127.0.0.1:8123"
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
     @StateObject private var viewModel = ChatAppViewModel()
     @FocusState private var focusedField: FocusedAppField?
 
@@ -50,6 +77,7 @@ struct ContentView: View {
 
             ChatPaneView(viewModel: viewModel, focusedField: $focusedField)
         }
+        .font(AppFont.body(messageFontSize))
         .background(WindowActivationView())
         .onAppear {
             viewModel.configure(baseURLText: storedBaseURL)
@@ -71,18 +99,20 @@ struct ContentView: View {
 struct SidebarView: View {
     @ObservedObject var viewModel: ChatAppViewModel
     let focusedField: FocusState<FocusedAppField?>.Binding
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("MLXChat")
-                .font(.title2.weight(.semibold))
+                .font(AppFont.title(messageFontSize))
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Provider")
-                    .font(.caption.weight(.semibold))
+                    .font(AppFont.label(messageFontSize, weight: .semibold))
                     .foregroundStyle(.secondary)
 
                 TextField("Base URL", text: $viewModel.baseURLText)
+                    .font(AppFont.body(messageFontSize))
                     .textFieldStyle(.roundedBorder)
                     .focused(focusedField, equals: .providerURL)
 
@@ -97,6 +127,7 @@ struct SidebarView: View {
                         }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
+                            .font(AppFont.body(messageFontSize))
                     }
                     .disabled(viewModel.isRefreshing)
                 }
@@ -114,12 +145,13 @@ struct SidebarView: View {
 
 struct ConversationListView: View {
     @ObservedObject var viewModel: ChatAppViewModel
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Conversations")
-                    .font(.caption.weight(.semibold))
+                    .font(AppFont.label(messageFontSize, weight: .semibold))
                     .foregroundStyle(.secondary)
 
                 Spacer()
@@ -128,6 +160,7 @@ struct ConversationListView: View {
                     viewModel.newConversation()
                 } label: {
                     Image(systemName: "plus")
+                        .font(AppFont.body(messageFontSize))
                 }
                 .buttonStyle(.borderless)
                 .help("New Chat")
@@ -136,7 +169,7 @@ struct ConversationListView: View {
 
             if viewModel.conversationSummaries.isEmpty {
                 Text("No saved chats")
-                    .font(.caption)
+                    .font(AppFont.label(messageFontSize))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
@@ -168,18 +201,19 @@ struct ConversationRow: View {
     let isSelected: Bool
     let selectAction: () -> Void
     let deleteAction: () -> Void
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         HStack(spacing: 6) {
             Button(action: selectAction) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(conversation.title)
-                        .font(.callout)
+                        .font(AppFont.body(messageFontSize))
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text(conversation.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption2)
+                        .font(AppFont.small(messageFontSize))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -189,6 +223,7 @@ struct ConversationRow: View {
 
             Button(action: deleteAction) {
                 Image(systemName: "trash")
+                    .font(AppFont.body(messageFontSize))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
@@ -203,6 +238,7 @@ struct ConversationRow: View {
 
 struct HealthBadge: View {
     let state: ProviderHealthState
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         HStack(spacing: 6) {
@@ -213,7 +249,7 @@ struct HealthBadge: View {
             Text(state.title)
                 .foregroundStyle(.secondary)
         }
-        .font(.caption)
+        .font(AppFont.label(messageFontSize))
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(Color(nsColor: .textBackgroundColor))
@@ -251,16 +287,17 @@ struct ChatPaneView: View {
 
 struct ChatHeaderView: View {
     @ObservedObject var viewModel: ChatAppViewModel
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(viewModel.routingStatus.title)
-                    .font(.headline)
+                    .font(AppFont.headline(messageFontSize))
                     .lineLimit(1)
 
                 Text(viewModel.routingStatus.subtitle(baseURLText: viewModel.baseURLText))
-                    .font(.caption)
+                    .font(AppFont.label(messageFontSize))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -271,6 +308,7 @@ struct ChatHeaderView: View {
                 viewModel.clearTranscript()
             } label: {
                 Label("Clear", systemImage: "trash")
+                    .font(AppFont.body(messageFontSize))
             }
             .disabled(viewModel.messages.isEmpty || viewModel.isSending)
         }
@@ -282,6 +320,7 @@ struct ChatHeaderView: View {
 struct TranscriptView: View {
     let messages: [ChatDisplayMessage]
     let isSending: Bool
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -289,6 +328,7 @@ struct TranscriptView: View {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if messages.isEmpty {
                         Text("No messages yet")
+                            .font(AppFont.body(messageFontSize))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, minHeight: 260)
                     } else {
@@ -305,7 +345,7 @@ struct TranscriptView: View {
                             Text("Waiting for reply")
                                 .foregroundStyle(.secondary)
                         }
-                        .font(.callout)
+                        .font(AppFont.body(messageFontSize))
                         .padding(.horizontal, 6)
                     }
                 }
@@ -354,7 +394,7 @@ struct ChatBubble: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(isUser ? "You" : "Assistant")
-                    .font(.caption.weight(.semibold))
+                    .font(AppFont.label(messageFontSize, weight: .semibold))
                     .foregroundStyle(.secondary)
 
                 if !isUser,
@@ -368,7 +408,7 @@ struct ChatBubble: View {
 
                 if displayContent.isEmpty, message.isStreaming {
                     Text("Streaming reply...")
-                        .font(.system(size: messageFontSize))
+                        .font(AppFont.body(messageFontSize))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -380,7 +420,7 @@ struct ChatBubble: View {
 
                 if message.didFail {
                     Text("Reply interrupted")
-                        .font(.caption)
+                        .font(AppFont.label(messageFontSize))
                         .foregroundStyle(.red)
                 }
             }
@@ -414,11 +454,12 @@ struct ThinkingPanel: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "brain.head.profile")
+                    .font(AppFont.label(baseFontSize))
                     .imageScale(.small)
                 Text("Thinking")
-                    .font(.system(size: max(baseFontSize - 1, 11), weight: .semibold))
+                    .font(AppFont.label(baseFontSize, weight: .semibold))
                 Text("internal reasoning")
-                    .font(.system(size: max(baseFontSize - 3, 10)))
+                    .font(AppFont.small(baseFontSize))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
@@ -448,7 +489,7 @@ struct MessageContentText: View {
             )
         } else {
             Text(displayContent)
-                .font(.system(size: messageFontSize))
+                .font(AppFont.body(messageFontSize))
         }
     }
 }
@@ -471,33 +512,35 @@ struct MarkdownBlockView: View {
         switch block.kind {
         case .paragraph:
             Text(inlineMarkdown(block.text))
-                .font(.system(size: baseFontSize))
+                .font(AppFont.body(baseFontSize))
         case .heading:
             Text(inlineMarkdown(block.text))
-                .font(.system(size: headingFontSize(for: block.level), weight: .semibold))
+                .font(AppFont.body(headingFontSize(for: block.level), weight: .semibold))
                 .padding(.top, 2)
         case .bulletListItem, .unorderedListItem:
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("-")
-                    .font(.system(size: baseFontSize))
+                    .font(AppFont.body(baseFontSize))
                 Text(inlineMarkdown(block.text))
-                    .font(.system(size: baseFontSize))
+                    .font(AppFont.body(baseFontSize))
             }
         case .numberedListItem:
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(block.ordinal ?? 1).")
-                    .font(.system(size: baseFontSize))
+                    .font(AppFont.body(baseFontSize))
                     .monospacedDigit()
                 Text(inlineMarkdown(block.text))
-                    .font(.system(size: baseFontSize))
+                    .font(AppFont.body(baseFontSize))
             }
         case .code:
             Text(block.text)
-                .font(.system(size: max(baseFontSize - 1, 11), design: .monospaced))
+                .font(AppFont.code(baseFontSize))
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        case .table:
+            MarkdownTableView(rows: block.tableRows, baseFontSize: baseFontSize)
         }
     }
 
@@ -520,13 +563,61 @@ struct MarkdownBlockView: View {
     }
 }
 
+struct MarkdownTableView: View {
+    let rows: [[String]]
+    let baseFontSize: Double
+
+    private var columnCount: Int {
+        rows.map(\.count).max() ?? 0
+    }
+
+    var body: some View {
+        if rows.isEmpty || columnCount == 0 {
+            EmptyView()
+        } else {
+            ScrollView(.horizontal) {
+                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                        GridRow {
+                            ForEach(0..<columnCount, id: \.self) { columnIndex in
+                                Text(inlineMarkdown(cellText(row, at: columnIndex)))
+                                    .font(AppFont.body(baseFontSize, weight: rowIndex == 0 ? .semibold : .regular))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .frame(minWidth: 90, maxWidth: 260, alignment: .leading)
+                                    .background(rowIndex == 0 ? Color(nsColor: .controlBackgroundColor) : Color.clear)
+                                    .overlay(
+                                        Rectangle()
+                                            .stroke(Color.secondary.opacity(0.24), lineWidth: 1)
+                                    )
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func cellText(_ row: [String], at index: Int) -> String {
+        index < row.count ? row[index] : ""
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? ChatMessagePresentation.renderedContent(role: "assistant", content: text))
+            ?? AttributedString(text)
+    }
+}
+
 struct ComposerView: View {
     @ObservedObject var viewModel: ChatAppViewModel
     let focusedField: FocusState<FocusedAppField?>.Binding
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
             TextField("Message", text: $viewModel.draftMessage, axis: .vertical)
+                .font(AppFont.body(messageFontSize))
                 .lineLimit(1...5)
                 .textFieldStyle(.roundedBorder)
                 .disabled(viewModel.isSending)
@@ -539,6 +630,7 @@ struct ComposerView: View {
                 submitDraft()
             } label: {
                 Label("Send", systemImage: "paperplane.fill")
+                    .font(AppFont.body(messageFontSize))
             }
             .keyboardShortcut(.return, modifiers: .command)
             .disabled(!viewModel.canSend)
@@ -556,14 +648,16 @@ struct ComposerView: View {
 
 struct ErrorBanner: View {
     let message: String
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
+                .font(AppFont.body(messageFontSize))
                 .foregroundStyle(.orange)
 
             Text(message)
-                .font(.callout)
+                .font(AppFont.body(messageFontSize))
                 .lineLimit(3)
 
             Spacer(minLength: 0)

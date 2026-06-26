@@ -7,6 +7,7 @@ public enum ChatContentBlockKind: Equatable, Sendable {
     case bulletListItem
     case unorderedListItem
     case code
+    case table
 }
 
 public struct ChatContentBlock: Equatable, Sendable {
@@ -15,19 +16,22 @@ public struct ChatContentBlock: Equatable, Sendable {
     public let level: Int?
     public let ordinal: Int?
     public let language: String?
+    public let tableRows: [[String]]
 
     public init(
         kind: ChatContentBlockKind,
         text: String,
         level: Int? = nil,
         ordinal: Int? = nil,
-        language: String? = nil
+        language: String? = nil,
+        tableRows: [[String]] = []
     ) {
         self.kind = kind
         self.text = text
         self.level = level
         self.ordinal = ordinal
         self.language = language
+        self.tableRows = tableRows
     }
 }
 
@@ -226,6 +230,13 @@ private struct MarkdownBlockParser {
                 continue
             }
 
+            if let table = table(from: lines, startingAt: index) {
+                flushParagraph()
+                blocks.append(.init(kind: .table, text: "", tableRows: table.rows))
+                index = table.nextIndex
+                continue
+            }
+
             if let item = numberedListItem(from: trimmed) {
                 flushParagraph()
                 blocks.append(.init(kind: .numberedListItem, text: item.text, ordinal: item.ordinal))
@@ -262,6 +273,68 @@ private struct MarkdownBlockParser {
         guard markerEndIndex < trimmed.endIndex, trimmed[markerEndIndex].isWhitespace else { return nil }
         let textStartIndex = trimmed.index(after: markerEndIndex)
         return (markerCount, String(trimmed[textStartIndex...]))
+    }
+
+    private func table(from lines: [String], startingAt index: Int) -> (rows: [[String]], nextIndex: Int)? {
+        guard index + 1 < lines.count else { return nil }
+        let headerLine = lines[index].trimmingCharacters(in: .whitespaces)
+        let separatorLine = lines[index + 1].trimmingCharacters(in: .whitespaces)
+        guard let headerCells = pipeTableCells(from: headerLine),
+              let separatorCells = pipeTableCells(from: separatorLine),
+              headerCells.count >= 2,
+              separatorCells.count == headerCells.count,
+              separatorCells.allSatisfy(isTableSeparatorCell)
+        else {
+            return nil
+        }
+
+        var rows = [headerCells]
+        var cursor = index + 2
+        while cursor < lines.count {
+            let line = lines[cursor].trimmingCharacters(in: .whitespaces)
+            guard let cells = pipeTableCells(from: line), cells.count > 1 else { break }
+            rows.append(normalizedTableRow(cells, columnCount: headerCells.count))
+            cursor += 1
+        }
+
+        return (rows, cursor)
+    }
+
+    private func pipeTableCells(from line: String) -> [String]? {
+        guard line.contains("|") else { return nil }
+        var tableLine = line.trimmingCharacters(in: .whitespaces)
+        if tableLine.hasPrefix("|") {
+            tableLine.removeFirst()
+        }
+        if tableLine.hasSuffix("|") {
+            tableLine.removeLast()
+        }
+        let cells = tableLine
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard cells.count > 1 else { return nil }
+        return cells
+    }
+
+    private func isTableSeparatorCell(_ text: String) -> Bool {
+        var cell = text.trimmingCharacters(in: .whitespaces)
+        if cell.hasPrefix(":") {
+            cell.removeFirst()
+        }
+        if cell.hasSuffix(":") {
+            cell.removeLast()
+        }
+        return cell.count >= 3 && cell.allSatisfy { $0 == "-" }
+    }
+
+    private func normalizedTableRow(_ cells: [String], columnCount: Int) -> [String] {
+        if cells.count == columnCount {
+            return cells
+        }
+        if cells.count > columnCount {
+            return Array(cells.prefix(columnCount))
+        }
+        return cells + Array(repeating: "", count: columnCount - cells.count)
     }
 
     private func numberedListItem(from trimmed: String) -> (ordinal: Int, text: String)? {
