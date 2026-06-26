@@ -14,6 +14,7 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public let role: String
     public var content: String
+    public var reasoning: String?
     public let createdAt: Date
     public var isStreaming: Bool
     public var didFail: Bool
@@ -22,6 +23,7 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
         id: UUID = UUID(),
         role: String,
         content: String,
+        reasoning: String? = nil,
         createdAt: Date = Date(),
         isStreaming: Bool = false,
         didFail: Bool = false
@@ -29,6 +31,7 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
         self.id = id
         self.role = role
         self.content = content
+        self.reasoning = reasoning
         self.createdAt = createdAt
         self.isStreaming = isStreaming
         self.didFail = didFail
@@ -43,6 +46,7 @@ public struct ChatCompletionResult: Equatable, Sendable {
     public let finishReason: String?
     public let usage: ChatTokenUsage?
     public let diffusion: TextDiffusionResultMetadata?
+    public let reasoning: String?
 
     public init(
         model: String,
@@ -51,7 +55,8 @@ public struct ChatCompletionResult: Equatable, Sendable {
         rawBody: Data,
         finishReason: String? = nil,
         usage: ChatTokenUsage? = nil,
-        diffusion: TextDiffusionResultMetadata? = nil
+        diffusion: TextDiffusionResultMetadata? = nil,
+        reasoning: String? = nil
     ) {
         self.model = model
         self.assistantText = assistantText
@@ -60,5 +65,22 @@ public struct ChatCompletionResult: Equatable, Sendable {
         self.finishReason = finishReason
         self.usage = usage
         self.diffusion = diffusion
+        self.reasoning = reasoning
+    }
+}
+
+public enum TranscriptAutoScrollEvent: Equatable, Sendable {
+    case messageCountChanged
+    case transcriptRevisionChanged
+}
+
+public enum TranscriptAutoScrollPolicy {
+    public static func shouldScrollToLatest(for event: TranscriptAutoScrollEvent) -> Bool {
+        switch event {
+        case .messageCountChanged:
+            return true
+        case .transcriptRevisionChanged:
+            return false
+        }
     }
 }

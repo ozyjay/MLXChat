@@ -6,6 +6,7 @@ import SwiftUI
 @main
 struct MLXChatApp: App {
     @NSApplicationDelegateAdaptor(AppLaunchCoordinator.self) private var appDelegate
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +14,24 @@ struct MLXChatApp: App {
                 .frame(minWidth: 880, minHeight: 560)
         }
         .windowStyle(.titleBar)
+        .commands {
+            CommandGroup(after: .textEditing) {
+                Button("Increase Chat Text Size") {
+                    messageFontSize = min(messageFontSize + 1, 24)
+                }
+                .keyboardShortcut("+", modifiers: [.command])
+
+                Button("Decrease Chat Text Size") {
+                    messageFontSize = max(messageFontSize - 1, 11)
+                }
+                .keyboardShortcut("-", modifiers: [.command])
+
+                Button("Reset Chat Text Size") {
+                    messageFontSize = 14
+                }
+                .keyboardShortcut("0", modifiers: [.command])
+            }
+        }
     }
 }
 
@@ -214,8 +233,7 @@ struct ChatPaneView: View {
 
             TranscriptView(
                 messages: viewModel.messages,
-                isSending: viewModel.isSending,
-                transcriptRevision: viewModel.transcriptRevision
+                isSending: viewModel.isSending
             )
 
             if let errorMessage = viewModel.errorMessage {
@@ -264,7 +282,6 @@ struct ChatHeaderView: View {
 struct TranscriptView: View {
     let messages: [ChatDisplayMessage]
     let isSending: Bool
-    let transcriptRevision: Int
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -295,14 +312,13 @@ struct TranscriptView: View {
                 .padding(18)
             }
             .onChange(of: messages.count) { _ in
+                guard TranscriptAutoScrollPolicy.shouldScrollToLatest(for: .messageCountChanged) else {
+                    return
+                }
                 guard let lastID = messages.last?.id else { return }
                 withAnimation {
                     proxy.scrollTo(lastID, anchor: .bottom)
                 }
-            }
-            .onChange(of: transcriptRevision) { _ in
-                guard let lastID = messages.last?.id else { return }
-                proxy.scrollTo(lastID, anchor: .bottom)
             }
         }
     }
@@ -310,9 +326,24 @@ struct TranscriptView: View {
 
 struct ChatBubble: View {
     let message: ChatDisplayMessage
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     private var isUser: Bool {
         message.role == "user"
+    }
+
+    private var displayContent: String {
+        guard !isUser else { return message.content }
+        return ChatMessagePresentation.normalizedAssistantContent(content: message.content).content
+    }
+
+    private var displayReasoning: String? {
+        guard !isUser else { return nil }
+        let normalized = ChatMessagePresentation.normalizedAssistantContent(
+            content: message.content,
+            reasoning: message.reasoning
+        )
+        return normalized.reasoning
     }
 
     var body: some View {
@@ -326,13 +357,23 @@ struct ChatBubble: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                if message.content.isEmpty, message.isStreaming {
+                if !isUser,
+                   let reasoning = displayReasoning,
+                   !reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    ThinkingPanel(
+                        reasoning: reasoning,
+                        baseFontSize: messageFontSize
+                    )
+                }
+
+                if displayContent.isEmpty, message.isStreaming {
                     Text("Streaming reply...")
+                        .font(.system(size: messageFontSize))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    MessageContentText(message: message)
+                    MessageContentText(message: message, displayContent: displayContent)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -346,25 +387,136 @@ struct ChatBubble: View {
             .padding(12)
             .background(isUser ? Color.accentColor.opacity(0.14) : Color(nsColor: .textBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .frame(maxWidth: 620, alignment: isUser ? .trailing : .leading)
+            .frame(maxWidth: isUser ? 620 : .infinity, alignment: isUser ? .trailing : .leading)
 
             if !isUser {
-                Spacer(minLength: 80)
+                EmptyView()
             }
         }
     }
 }
 
-struct MessageContentText: View {
-    let message: ChatDisplayMessage
+struct ThinkingPanel: View {
+    let reasoning: String
+    let baseFontSize: Double
 
     var body: some View {
-        Text(renderedContent)
+        DisclosureGroup {
+            MarkdownBlockView(
+                blocks: ChatMessagePresentation.contentBlocks(
+                    role: "assistant",
+                    content: reasoning
+                ),
+                baseFontSize: baseFontSize,
+                isReasoning: true
+            )
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "brain.head.profile")
+                    .imageScale(.small)
+                Text("Thinking")
+                    .font(.system(size: max(baseFontSize - 1, 11), weight: .semibold))
+                Text("internal reasoning")
+                    .font(.system(size: max(baseFontSize - 3, 10)))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+        }
+        .tint(.orange)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct MessageContentText: View {
+    let message: ChatDisplayMessage
+    let displayContent: String
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
+
+    var body: some View {
+        if message.role == "assistant" {
+            MarkdownBlockView(
+                blocks: ChatMessagePresentation.contentBlocks(role: message.role, content: displayContent),
+                baseFontSize: messageFontSize
+            )
+        } else {
+            Text(displayContent)
+                .font(.system(size: messageFontSize))
+        }
+    }
+}
+
+struct MarkdownBlockView: View {
+    let blocks: [ChatContentBlock]
+    let baseFontSize: Double
+    var isReasoning = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+        }
     }
 
-    private var renderedContent: AttributedString {
-        (try? ChatMessagePresentation.renderedContent(role: message.role, content: message.content))
-            ?? AttributedString(message.content)
+    @ViewBuilder
+    private func blockView(_ block: ChatContentBlock) -> some View {
+        switch block.kind {
+        case .paragraph:
+            Text(inlineMarkdown(block.text))
+                .font(.system(size: baseFontSize))
+        case .heading:
+            Text(inlineMarkdown(block.text))
+                .font(.system(size: headingFontSize(for: block.level), weight: .semibold))
+                .padding(.top, 2)
+        case .bulletListItem, .unorderedListItem:
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("-")
+                    .font(.system(size: baseFontSize))
+                Text(inlineMarkdown(block.text))
+                    .font(.system(size: baseFontSize))
+            }
+        case .numberedListItem:
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(block.ordinal ?? 1).")
+                    .font(.system(size: baseFontSize))
+                    .monospacedDigit()
+                Text(inlineMarkdown(block.text))
+                    .font(.system(size: baseFontSize))
+            }
+        case .code:
+            Text(block.text)
+                .font(.system(size: max(baseFontSize - 1, 11), design: .monospaced))
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? ChatMessagePresentation.renderedContent(role: "assistant", content: text))
+            ?? AttributedString(text)
+    }
+
+    private func headingFontSize(for level: Int?) -> Double {
+        switch level ?? 3 {
+        case 1:
+            return baseFontSize + 8
+        case 2:
+            return baseFontSize + 5
+        case 3:
+            return baseFontSize + 3
+        default:
+            return baseFontSize + 1
+        }
     }
 }
 
@@ -670,6 +822,16 @@ final class ChatAppViewModel: ObservableObject {
                 if !delta.content.isEmpty {
                     messages[index].content += delta.content
                     replyCharacters += delta.content.count
+                    transcriptRevision += 1
+                    persistActiveConversation(debounced: true)
+                }
+                if let reasoning = delta.reasoning, !reasoning.isEmpty {
+                    if let existingReasoning = messages[index].reasoning,
+                       !existingReasoning.isEmpty {
+                        messages[index].reasoning = "\(existingReasoning)\n\n\(reasoning)"
+                    } else {
+                        messages[index].reasoning = reasoning
+                    }
                     transcriptRevision += 1
                     persistActiveConversation(debounced: true)
                 }

@@ -159,6 +159,56 @@ final class ProviderChatCompletionTests: XCTestCase {
         XCTAssertFalse(result.rawBody.isEmpty)
     }
 
+    func testCompleteChatSplitsChannelMarkedThinkingFromFinalAnswer() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"id":"chat","model":"mlx-ask","choices":[{"index":0,"message":{"role":"assistant","content":"<|channel|>analysis<|message|>Need to be brief.<|end|><|start|>assistant<|channel|>final<|message|>**Done**\n\n- one<|end|>"}}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.completeChat(
+            model: "mlx-ask",
+            messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+        )
+
+        XCTAssertEqual(result.assistantText, "**Done**\n\n- one")
+        XCTAssertEqual(result.reasoning, "Need to be brief.")
+        XCTAssertFalse(result.assistantText.contains("<|channel|>"))
+        XCTAssertFalse(result.assistantText.contains("<|message|>"))
+        XCTAssertFalse(result.assistantText.contains("<|end|>"))
+        XCTAssertFalse(result.assistantText.contains("<|start|>"))
+    }
+
+    func testCompleteChatPreservesSeparateReasoningField() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"id":"chat","model":"mlx-ask","choices":[{"index":0,"message":{"role":"assistant","content":"Final answer.","reasoning":"Hidden chain."}}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.completeChat(
+            model: "mlx-ask",
+            messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+        )
+
+        XCTAssertEqual(result.assistantText, "Final answer.")
+        XCTAssertEqual(result.reasoning, "Hidden chain.")
+    }
+
     func testCompleteChatParsesTextFallback() async throws {
         let transport = FakeTransport(
             responses: [
@@ -181,6 +231,32 @@ final class ProviderChatCompletionTests: XCTestCase {
         XCTAssertEqual(result.model, "mlx-fast")
         XCTAssertEqual(result.assistantText, "Fallback text reply.")
         XCTAssertEqual(result.statusCode, 200)
+    }
+
+    func testCompleteChatSplitsChannelMarkedThinkingFromAnswer() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"id":"chat","choices":[{"index":0,"message":{"role":"assistant","content":"<|channel|>analysis<|message|>Need to answer briefly.<|end|><|start|>assistant<|channel|>final<|message|>**Done**\n\n- item<|end|>"}}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.completeChat(
+            model: "mlx-ask",
+            messages: [ChatTranscriptMessage(role: "user", content: "Summarise")]
+        )
+
+        XCTAssertEqual(result.assistantText, "**Done**\n\n- item")
+        XCTAssertEqual(result.reasoning, "Need to answer briefly.")
+        XCTAssertFalse(result.assistantText.contains("<|channel|>"))
+        XCTAssertFalse(result.assistantText.contains("<|message|>"))
+        XCTAssertFalse(result.assistantText.contains("<|end|>"))
     }
 
     func testCompleteChatThrowsForNonSuccessStatus() async throws {
@@ -261,6 +337,28 @@ final class ProviderChatCompletionTests: XCTestCase {
         XCTAssertTrue(transport.requestBodies.first?.contains(#""stream":true"#) == true)
     }
 
+    func testStreamChatSplitsChannelMarkedDelta() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"data: {"choices":[{"delta":{"content":"<|channel|>analysis<|message|>Think first.<|end|><|channel|>final<|message|>Final text.<|end|>"}}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+            )
+        )
+
+        XCTAssertEqual(deltas, [
+            ChatStreamDelta(content: "Final text.", reasoning: "Think first."),
+        ])
+    }
+
     func testStreamChatHandlesSplitFramesAndKeepAliveLines() async throws {
         let transport = StreamingRecordingTransport(
             statusCode: 200,
@@ -281,6 +379,28 @@ final class ProviderChatCompletionTests: XCTestCase {
         )
 
         XCTAssertEqual(deltas.map(\.content), ["He", "y"])
+    }
+
+    func testStreamChatSplitsChannelMarkedThinkingFromAnswer() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"data: {"choices":[{"delta":{"content":"<|channel|>analysis<|message|>Work privately.<|end|><|channel|>final<|message|>Visible answer<|end|>"},"finish_reason":"stop"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "hello")]
+            )
+        )
+
+        XCTAssertEqual(deltas, [
+            ChatStreamDelta(content: "Visible answer", finishReason: "stop", reasoning: "Work privately."),
+        ])
     }
 
     func testStreamChatThrowsForNonSuccessStatus() async throws {
@@ -351,8 +471,8 @@ final class ChatMessagePresentationTests: XCTestCase {
         XCTAssertEqual(String(rendered.characters), "**Literal** prompt")
     }
 
-    func testAssistantContentKeepsMarkdownBlocksReadable() throws {
-        let rendered = try ChatMessagePresentation.renderedContent(
+    func testAssistantContentParsesMarkdownBlocksForRendering() throws {
+        let blocks = ChatMessagePresentation.contentBlocks(
             role: "assistant",
             content: """
             Below is a **review** of the script.
@@ -370,25 +490,18 @@ final class ChatMessagePresentationTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(
-            String(rendered.characters),
-            """
-            Below is a review of the script.
-
-            Feel free to cherry-pick the changes.
-
-            1. What the script already does
-            2. Things that could be improved
-
-            Command-line usage
-
-            python towers_of_hanoi.py 3
-            """
-        )
+        XCTAssertEqual(blocks, [
+            ChatContentBlock(kind: .paragraph, text: "Below is a **review** of the script."),
+            ChatContentBlock(kind: .paragraph, text: "Feel free to cherry-pick the changes."),
+            ChatContentBlock(kind: .numberedListItem, text: "What the script already does", ordinal: 1),
+            ChatContentBlock(kind: .numberedListItem, text: "Things that could be improved", ordinal: 2),
+            ChatContentBlock(kind: .heading, text: "Command-line usage", level: 3),
+            ChatContentBlock(kind: .code, text: "python towers_of_hanoi.py 3", language: "bash"),
+        ])
     }
 
     func testAssistantFencedCodeKeepsMarkdownLikeCharactersLiteral() throws {
-        let rendered = try ChatMessagePresentation.renderedContent(
+        let blocks = ChatMessagePresentation.contentBlocks(
             role: "assistant",
             content: """
             ```python
@@ -398,13 +511,44 @@ final class ChatMessagePresentationTests: XCTestCase {
             """
         )
 
-        XCTAssertEqual(
-            String(rendered.characters),
-            """
-            if __name__ == "__main__":
-                print(f"Move {i}: {src} -> {dst}")
-            """
+        XCTAssertEqual(blocks, [
+            ChatContentBlock(
+                kind: .code,
+                text: """
+                if __name__ == "__main__":
+                    print(f"Move {i}: {src} -> {dst}")
+                """,
+                language: "python"
+            ),
+        ])
+    }
+
+    func testAssistantChannelMarkedContentSplitsReasoningAndAnswer() {
+        let result = ChatMessagePresentation.normalizedAssistantContent(
+            content: "<|channel|>analysis<|message|>Draft internally.<|end|><|channel|>final<|message|>Final **answer**.<|end|>"
         )
+
+        XCTAssertEqual(result.content, "Final **answer**.")
+        XCTAssertEqual(result.reasoning, "Draft internally.")
+    }
+
+    func testAssistantContentBlocksNormaliseChannelMarkedSavedContent() {
+        let blocks = ChatMessagePresentation.contentBlocks(
+            role: "assistant",
+            content: "<|channel|>analysis<|message|>Draft internally.<|end|><|channel|>final<|message|>### Final\n\n- answer<|end|>"
+        )
+
+        XCTAssertEqual(blocks, [
+            ChatContentBlock(kind: .heading, text: "Final", level: 3),
+            ChatContentBlock(kind: .bulletListItem, text: "answer"),
+        ])
+    }
+}
+
+final class TranscriptAutoScrollPolicyTests: XCTestCase {
+    func testScrollsForNewMessagesButNotStreamingRevisions() {
+        XCTAssertTrue(TranscriptAutoScrollPolicy.shouldScrollToLatest(for: .messageCountChanged))
+        XCTAssertFalse(TranscriptAutoScrollPolicy.shouldScrollToLatest(for: .transcriptRevisionChanged))
     }
 }
 

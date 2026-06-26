@@ -94,10 +94,12 @@ public struct HTTPResponse {
 public struct ChatStreamDelta: Equatable, Sendable {
     public let content: String
     public let finishReason: String?
+    public let reasoning: String?
 
-    public init(content: String, finishReason: String? = nil) {
+    public init(content: String, finishReason: String? = nil, reasoning: String? = nil) {
         self.content = content
         self.finishReason = finishReason
+        self.reasoning = reasoning
     }
 }
 
@@ -215,7 +217,11 @@ public struct ProviderClient {
         let payload = try jsonDecoder.decode(
             ChatCompletionResponsePayload.self, from: response.body)
         let firstChoice = payload.choices.first
-        let assistantText = firstChoice?.message?.content ?? firstChoice?.text ?? ""
+        let normalizedContent = ChatMessagePresentation.normalizedAssistantContent(
+            content: firstChoice?.message?.content ?? firstChoice?.text ?? "",
+            reasoning: firstChoice?.message?.reasoning
+        )
+        let assistantText = normalizedContent.content
         Self.logger.notice(
             "Completed chat model=\(model, privacy: .public) resolvedModel=\(payload.model ?? model, privacy: .public) status=\(response.statusCode, privacy: .public) replyCharacters=\(assistantText.count, privacy: .public)"
         )
@@ -230,7 +236,8 @@ public struct ProviderClient {
             rawBody: response.body,
             finishReason: firstChoice?.finishReason,
             usage: payload.usage,
-            diffusion: payload.diffusion
+            diffusion: payload.diffusion,
+            reasoning: normalizedContent.reasoning
         )
     }
 
@@ -444,9 +451,21 @@ public struct ProviderClient {
         do {
             let chunk = try jsonDecoder.decode(ChatCompletionStreamChunk.self, from: data)
             for choice in chunk.choices {
-                let content = choice.delta?.content ?? choice.message?.content ?? choice.text ?? ""
-                if !content.isEmpty || choice.finishReason != nil {
-                    yield(ChatStreamDelta(content: content, finishReason: choice.finishReason))
+                let normalizedContent = ChatMessagePresentation.normalizedAssistantContent(
+                    content: choice.delta?.content ?? choice.message?.content ?? choice.text ?? "",
+                    reasoning: choice.delta?.reasoning ?? choice.message?.reasoning
+                )
+                if !normalizedContent.content.isEmpty
+                    || normalizedContent.reasoning != nil
+                    || choice.finishReason != nil
+                {
+                    yield(
+                        ChatStreamDelta(
+                            content: normalizedContent.content,
+                            finishReason: choice.finishReason,
+                            reasoning: normalizedContent.reasoning
+                        )
+                    )
                 }
             }
         } catch {
@@ -753,6 +772,7 @@ public struct ProviderClient {
 
     private struct ChatCompletionMessage: Decodable {
         let content: String?
+        let reasoning: String?
     }
 
     private struct ChatCompletionStreamChunk: Decodable {
