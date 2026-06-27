@@ -7,7 +7,7 @@ public enum LocalProviderURLValidator {
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: trimmedValue),
               let scheme = components.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
+              scheme == "http",
               let host = components.host?.lowercased()
         else { return nil }
 

@@ -66,7 +66,7 @@ When an active model is configured, `GET /v1/models` advertises role aliases fol
 ```text
 mlx-ask
 mlx-plan
-mlx-fast
+mlx-coding
 <active MLX model id>
 ```
 
@@ -76,9 +76,11 @@ Observed alias intent:
 | --- | --- |
 | `mlx-ask` | Ask |
 | `mlx-plan` | Planning |
-| `mlx-fast` | Coding |
+| `mlx-coding` | Coding |
 
 MLXDashboard may route aliases to role-specific upstream endpoints when configured. When no role-specific endpoint is available, aliases can resolve to the active model.
+
+`mlx-fast` is a legacy coding alias accepted by older clients and providers. MLXChat keeps explicit compatibility coverage for it, but current smoke tests and docs treat `mlx-coding` as the canonical Dashboard coding alias.
 
 ## Compatibility Routes
 
@@ -108,6 +110,7 @@ Observed compatibility behaviour:
 - `/api/tags` and `/api/ps` advertise the aliases and active model in Ollama-style response shapes.
 - `/api/version` returns version `0.0.0`.
 - `/api/chat` and `/api/generate` are translated to chat completions.
+- `/provider/v1/mode-advice` accepts the latest user input and selected alias, then returns Dashboard routing advice such as `suggested_mode`, `confidence`, `should_suggest_switch`, `current_mode`, and `reason`.
 
 MLXChat understands these provider metadata fields for text model selection:
 
@@ -116,6 +119,8 @@ MLXChat understands these provider metadata fields for text model selection:
 - `model_family: "diffusion_text"` marks text diffusion models that still return text through chat-completions-compatible routes.
 - `state: "unsupported"` plus `unsupported_reason` marks a listed model that should not be used for chat requests.
 - `state: "not_installed"` plus `not_installed_reason` marks a listed model that is known but unavailable in the local cache.
+- `runtime`, `model_type`, `supports_streaming`, `supported_generation_modes`, `max_context_length`, and `max_output_tokens` are optional descriptive capability fields.
+- `effective_model`, `routing_state`, `effective_port`, and `fallback_reason` describe Dashboard alias routing when present.
 
 These fields are compatibility guidance for MLXChat clients. They do not add image diffusion support; image generation requires a separate provider contract.
 

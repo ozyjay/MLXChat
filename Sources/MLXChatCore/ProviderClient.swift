@@ -177,7 +177,7 @@ public struct ProviderClient {
         models: [ProviderModelMetadata], statusCode: Int
     ) {
         do {
-            return try await fetchModelMetadata(path: "/provider/v1/models")
+            return try await fetchCanonicalModelMetadata()
         } catch {
             guard shouldFallbackToLegacyMetadataRoute(error) else {
                 throw error
@@ -190,6 +190,12 @@ public struct ProviderClient {
             )
             return try await fetchModelMetadata(path: "/api/v0/models")
         }
+    }
+
+    public func fetchCanonicalModelMetadata() async throws -> (
+        models: [ProviderModelMetadata], statusCode: Int
+    ) {
+        try await fetchModelMetadata(path: "/provider/v1/models")
     }
 
     public func chatCompletions(

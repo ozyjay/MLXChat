@@ -8,12 +8,16 @@ Build a command-line smoke tester that checks:
 
 - provider reachability with `GET /health`;
 - model discovery with `GET /v1/models`;
+- canonical MLXDashboard metadata discovery with `GET /provider/v1/models`;
+- canonical alias metadata and Dashboard routing metadata when advertised;
+- mode advice with `POST /provider/v1/mode-advice` when Dashboard capability is detected;
 - canonical chat completion with `POST /v1/chat/completions`;
 - responses compatibility with `POST /v1/responses`;
-- streaming chat behaviour with `"stream": true`;
-- role aliases `mlx-ask`, `mlx-plan`, and `mlx-fast`.
+- streaming chat behaviour with `"stream": true` using the shared stream parser;
+- role aliases `mlx-ask`, `mlx-plan`, and `mlx-coding`.
 
 The smoke tester should produce concise pass/fail output and include the request path, selected model, HTTP status, and short failure body when something fails.
+`mlx-fast` should remain covered only as a legacy compatibility alias.
 
 ## Phase 2: Compatibility Probes
 
@@ -32,6 +36,7 @@ These probes should report schema drift without assuming MLXDashboard is a produ
 Once smoke-test needs are clear, add a small reusable client wrapper around the provider:
 
 - base URL configuration defaulting to `http://127.0.0.1:8123`;
+- localhost-only URL validation matching the SwiftUI app;
 - health and model listing helpers;
 - model capability metadata helpers using `/provider/v1/models`, with legacy `/api/v0/models` fallback for older local providers;
 - chat-completion and responses helpers;

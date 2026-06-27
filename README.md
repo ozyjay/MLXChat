@@ -98,17 +98,22 @@ Use `--base-url` only for another local MLXDashboard provider endpoint:
 swift run mlxchat --base-url http://127.0.0.1:8123 --json
 ```
 
+The CLI accepts only local HTTP provider URLs: `http://127.0.0.1:<port>`, `http://localhost:<port>`, or `http://[::1]:<port>`, with an optional `/v1` suffix. It rejects remote hosts, credentials, query strings, fragments, and other paths.
+
 ## What It Checks
 
 The smoke tester verifies the current compatibility surface documented for MLXDashboard:
 
 - `GET /health`
 - `GET /v1/models`
+- `GET /provider/v1/models`
+- canonical alias metadata and Dashboard routing metadata when advertised
+- `/provider/v1/mode-advice` when Dashboard capability is detected
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
-- optional streaming chat completions
+- optional streaming chat completions through the same streaming parser used by the app
 
-It expects the role aliases `mlx-ask`, `mlx-plan`, and `mlx-fast` to appear in the model listing.
+It expects the current Dashboard role aliases `mlx-ask`, `mlx-plan`, and `mlx-coding` to appear in the model listing. `mlx-fast` is tolerated only as a legacy compatibility alias and is not sufficient for the current Dashboard contract.
 
 ## Localhost Safety
 

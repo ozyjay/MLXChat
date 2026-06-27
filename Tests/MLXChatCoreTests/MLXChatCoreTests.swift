@@ -16,7 +16,7 @@ final class CLIOptionsTests: XCTestCase {
     func testParsingOverrides() throws {
         let options = try CLIOptions(
             arguments: [
-                "--base-url", "http://127.0.0.1:9999",
+                "--base-url", "http://127.0.0.1:9999/v1",
                 "--timeout", "12",
                 "--json",
                 "--no-stream",
@@ -45,6 +45,37 @@ final class CLIOptionsTests: XCTestCase {
             XCTAssertEqual(error as? CLIOptionsError, .invalidBaseURLError("file:///tmp/provider"))
         }
     }
+
+    func testBaseURLAllowsOnlyLocalHTTPProviderForms() throws {
+        let accepted = [
+            "http://127.0.0.1:8123",
+            "http://localhost:8123",
+            "http://[::1]:8123",
+            "http://127.0.0.1:8123/v1",
+        ]
+
+        for value in accepted {
+            let options = try CLIOptions(arguments: ["--base-url", value])
+            XCTAssertEqual(options.baseURL.path, "")
+        }
+    }
+
+    func testBaseURLRejectsRemoteCredentialsQueriesFragmentsAndUnexpectedPaths() {
+        let rejected = [
+            "https://127.0.0.1:8123",
+            "http://192.168.1.10:8123",
+            "http://user:pass@127.0.0.1:8123",
+            "http://127.0.0.1:8123?token=abc",
+            "http://127.0.0.1:8123#fragment",
+            "http://127.0.0.1:8123/provider/v1/models",
+        ]
+
+        for value in rejected {
+            XCTAssertThrowsError(try CLIOptions(arguments: ["--base-url", value])) { error in
+                XCTAssertEqual(error as? CLIOptionsError, .invalidBaseURLError(value))
+            }
+        }
+    }
 }
 
 final class FakeTransport: HTTPTransport {
@@ -57,8 +88,8 @@ final class FakeTransport: HTTPTransport {
 }
 
 final class SmokeTestRunnerTests: XCTestCase {
-    func testSmokeRunnerPassesWithAllRoutes() async throws {
-        let transport = FakeTransport(
+    func testSmokeRunnerPassesWithCurrentDashboardNormalChatContract() async throws {
+        let transport = SmokeStreamingTransport(
             responses: [
                 "GET /health": MockResponse(
                     statusCode: 200,
@@ -67,7 +98,14 @@ final class SmokeTestRunnerTests: XCTestCase {
                 "GET /v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
-                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-fast"},{"id":"mlx-phi"}]}"#
+                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-coding"},{"id":"mlx-community/Tiny"}]}"#
+                            .utf8
+                    )
+                ),
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","role":"ask","generation_type":"text","model_family":"chat","state":"loaded","resolved_model":"mlx-community/Tiny","effective_model":"mlx-community/Tiny","routing_state":"role_endpoint","effective_port":8080,"runtime":"mlx-lm","model_type":"gpt_oss","supports_streaming":true,"supported_generation_modes":["chat"],"max_context_length":32768,"max_output_tokens":2048},{"id":"mlx-plan","type":"alias","role":"plan","generation_type":"text","model_family":"chat","state":"loaded","resolved_model":"mlx-community/Planner","effective_model":"mlx-community/Planner","routing_state":"role_endpoint","effective_port":8081},{"id":"mlx-coding","type":"alias","role":"coding","generation_type":"text","model_family":"chat","state":"loaded","resolved_model":"mlx-community/Coder","effective_model":"mlx-community/Tiny","routing_state":"active_model_fallback","effective_port":8080,"fallback_reason":"role server unavailable; using active model"},{"id":"mlx-community/Tiny","type":"llm","generation_type":"text","model_family":"chat","state":"loaded"}]}"#
                             .utf8
                     )
                 ),
@@ -78,22 +116,41 @@ final class SmokeTestRunnerTests: XCTestCase {
                             .utf8
                     )
                 ),
-                "POST /v1/chat/completions stream=true": MockResponse(
-                    statusCode: 200,
-                    body: Data(#"data: {"object":"chat.completion","choices":[{"delta":{"content":"ok"}}]}\ndata: [DONE]"#.utf8)
-                ),
                 "POST /v1/responses": MockResponse(
                     statusCode: 200,
                     body: Data(#"{"id":"resp","object":"responses","output":[{"type":"text","text":"ok"}]}"#.utf8)
                 ),
+                "POST /provider/v1/mode-advice": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"suggested_mode":"plan","confidence":0.91,"should_suggest_switch":true,"current_mode":"ask","reason":"Planning prompt."}"#.utf8)
+                ),
+            ],
+            streamStatusCode: 200,
+            streamChunks: [
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"started","model":"mlx-community/Tiny","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":null,"output_tokens":null,"total_tokens":null}}"#
+                    + "\n\n",
+                #"data: {"model":"mlx-community/Tiny","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
             ]
         )
         let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
         let runner = SmokeTestRunner(client: client)
         let report = await runner.run(includeStreamingCheck: true)
 
-        XCTAssertEqual(report.checks.count, 5)
+        XCTAssertEqual(report.checks.map(\.name), [
+            "Health",
+            "Models",
+            "Provider metadata",
+            "Alias metadata",
+            "Routing metadata",
+            "Mode advice",
+            "Chat completions",
+            "Responses",
+            "Chat stream",
+        ])
         XCTAssertTrue(report.allPassed)
+        XCTAssertEqual(transport.streamRequestPaths, ["/v1/chat/completions"])
     }
 
     func testSmokeRunnerCanSkipStreamingCheck() async throws {
@@ -106,7 +163,14 @@ final class SmokeTestRunnerTests: XCTestCase {
                 "GET /v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
-                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-fast"}]}"#
+                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-coding"}]}"#
+                            .utf8
+                    )
+                ),
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","role":"ask","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-plan","type":"alias","role":"plan","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-coding","type":"alias","role":"coding","generation_type":"text","model_family":"chat","state":"loaded"}]}"#
                             .utf8
                     )
                 ),
@@ -121,15 +185,49 @@ final class SmokeTestRunnerTests: XCTestCase {
                     statusCode: 200,
                     body: Data(#"{"id":"resp","object":"responses","choices":[{"index":0,"message":{"role":"assistant","content":"ok"}}]}"#.utf8)
                 ),
+                "POST /provider/v1/mode-advice": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"suggested_mode":"plan","confidence":0.91,"should_suggest_switch":true,"current_mode":"ask","reason":"Planning prompt."}"#.utf8)
+                ),
             ]
         )
         let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
         let runner = SmokeTestRunner(client: client)
         let report = await runner.run(includeStreamingCheck: false)
 
-        XCTAssertEqual(report.checks.count, 4)
+        XCTAssertFalse(report.checks.contains { $0.name == "Chat stream" })
         XCTAssertTrue(report.allPassed)
         XCTAssertFalse(report.includeStreamingCheck)
+    }
+
+    func testSmokeRunnerFailsWhenCanonicalCodingAliasIsMissingEvenIfLegacyFastExists() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /health": MockResponse(statusCode: 200, body: Data(#"{"status":"ok"}"#.utf8)),
+                "GET /v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-fast"}]}"#.utf8)
+                ),
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"object":"list","data":[{"id":"mlx-ask","role":"ask","state":"loaded"},{"id":"mlx-plan","role":"plan","state":"loaded"},{"id":"mlx-fast","role":"coding","state":"loaded"}]}"#.utf8)
+                ),
+                "POST /v1/chat/completions": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"choices":[{"message":{"content":"ok"}}]}"#.utf8)
+                ),
+                "POST /v1/responses": MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"output":[{"type":"text","text":"ok"}]}"#.utf8)
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+        let report = await SmokeTestRunner(client: client).run(includeStreamingCheck: false)
+        let modelsCheck = try XCTUnwrap(report.checks.first { $0.name == "Models" })
+
+        XCTAssertFalse(modelsCheck.passed)
+        XCTAssertEqual(modelsCheck.details, "missing canonical alias: mlx-coding; legacy mlx-fast is not sufficient")
     }
 }
 
@@ -224,11 +322,11 @@ final class ProviderChatCompletionTests: XCTestCase {
         let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
 
         let result = try await client.completeChat(
-            model: "mlx-fast",
+            model: "mlx-ask",
             messages: [ChatTranscriptMessage(role: "user", content: "Use fallback")]
         )
 
-        XCTAssertEqual(result.model, "mlx-fast")
+        XCTAssertEqual(result.model, "mlx-ask")
         XCTAssertEqual(result.assistantText, "Fallback text reply.")
         XCTAssertEqual(result.statusCode, 200)
     }
@@ -1299,6 +1397,36 @@ final class ProviderModelMetadataTests: XCTestCase {
         XCTAssertEqual(model.maxContextLength, 32768)
     }
 
+    func testFetchModelMetadataParsesCurrentDashboardNormalChatFieldsAndIgnoresUnknownFields() async throws {
+        let transport = FakeTransport(
+            responses: [
+                "GET /provider/v1/models": MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","role":"ask","generation_type":"text","model_family":"chat","state":"loaded","resolved_model":"mlx-community/gpt-oss-20b-MXFP4-Q8","runtime":"mlx-lm","model_type":"gpt_oss","supports_streaming":true,"supported_generation_modes":["chat"],"max_context_length":32768,"max_output_tokens":2048,"effective_model":"mlx-community/gpt-oss-20b-MXFP4-Q8","routing_state":"role_endpoint","effective_port":8080,"fallback_reason":null,"future_field":"ignored"}]}"#
+                            .utf8
+                    )
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let result = try await client.fetchModelMetadata()
+        let model = try XCTUnwrap(result.models.first)
+
+        XCTAssertEqual(model.id, "mlx-ask")
+        XCTAssertEqual(model.runtime, "mlx-lm")
+        XCTAssertEqual(model.modelType, "gpt_oss")
+        XCTAssertEqual(model.supportsStreaming, true)
+        XCTAssertEqual(model.supportedGenerationModes, ["chat"])
+        XCTAssertEqual(model.maxContextLength, 32768)
+        XCTAssertEqual(model.maxOutputTokens, 2048)
+        XCTAssertEqual(model.effectiveModel, "mlx-community/gpt-oss-20b-MXFP4-Q8")
+        XCTAssertEqual(model.routingState, "role_endpoint")
+        XCTAssertEqual(model.effectivePort, 8080)
+        XCTAssertNil(model.fallbackReason)
+    }
+
     func testFetchModelMetadataParsesDashboardRoutingMetadata() async throws {
         let transport = FakeTransport(
             responses: [
@@ -1580,7 +1708,7 @@ final class ProviderModelMetadataTests: XCTestCase {
         let catalog = ProviderModelCatalog(
             advertisedModelIDs: [
                 "mlx-ask",
-                "mlx-fast",
+                "mlx-coding",
             ],
             metadata: [
                 ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
@@ -1589,8 +1717,61 @@ final class ProviderModelMetadataTests: XCTestCase {
 
         XCTAssertEqual(catalog.models, [
             ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
-            ProviderModelMetadata(id: "mlx-fast", capability: .chatText, state: nil),
+            ProviderModelMetadata(id: "mlx-coding", capability: .chatText, state: nil),
         ])
+    }
+
+    func testModelCatalogOverlaysMetadataOnlyForAdvertisedCanonicalAliases() {
+        let catalog = ProviderModelCatalog(
+            advertisedModelIDs: [
+                "mlx-ask",
+                "mlx-plan",
+                "mlx-coding",
+            ],
+            metadata: [
+                ProviderModelMetadata(
+                    id: "mlx-ask",
+                    capability: .chatText,
+                    state: "loaded",
+                    runtime: "mlx-lm",
+                    supportsStreaming: true,
+                    effectiveModel: "mlx-community/Ask",
+                    routingState: "role_endpoint",
+                    effectivePort: 8080
+                ),
+                ProviderModelMetadata(
+                    id: "mlx-plan",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Plan",
+                    role: "plan",
+                    maxOutputTokens: 4096
+                ),
+                ProviderModelMetadata(
+                    id: "metadata-only",
+                    capability: .chatText,
+                    state: "loaded"
+                ),
+            ]
+        )
+
+        XCTAssertEqual(catalog.models.map(\.id), ["mlx-ask", "mlx-plan", "mlx-coding"])
+        XCTAssertEqual(catalog.model(id: "mlx-ask")?.effectivePort, 8080)
+        XCTAssertEqual(catalog.model(id: "mlx-plan")?.maxOutputTokens, 4096)
+        XCTAssertEqual(catalog.model(id: "mlx-coding")?.capability, .chatText)
+        XCTAssertNil(catalog.model(id: "metadata-only"))
+    }
+
+    func testLegacyFastAliasRemainsSendableOnlyWhenAdvertised() {
+        let catalog = ProviderModelCatalog(
+            advertisedModelIDs: ["mlx-fast"],
+            metadata: [
+                ProviderModelMetadata(id: "mlx-fast", capability: .chatText, state: "loaded", role: "coding"),
+            ]
+        )
+
+        XCTAssertTrue(catalog.canSend(with: "mlx-fast"))
+        XCTAssertEqual(catalog.defaultSelection(persistedSelection: ""), "mlx-fast")
     }
 
     func testFutureMLXDashboardTextDiffusionShapeBuildsRunnableCatalog() async throws {
@@ -1600,14 +1781,14 @@ final class ProviderModelMetadataTests: XCTestCase {
                 "GET /v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
-                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-fast"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit"}]}"#
+                        #"{"object":"list","data":[{"id":"mlx-ask"},{"id":"mlx-plan"},{"id":"mlx-coding"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit"}]}"#
                             .utf8
                     )
                 ),
                 "GET /provider/v1/models": MockResponse(
                     statusCode: 200,
                     body: Data(
-                        #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-plan","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-fast","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"loaded"},{"id":"mlx-community/diffusiongemma-26B-A4B-it-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"unsupported","unsupported_reason":"Unsupported by installed mlx-lm runtime"}]}"#
+                        #"{"object":"list","data":[{"id":"mlx-ask","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-plan","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-coding","type":"alias","generation_type":"text","model_family":"chat","state":"loaded"},{"id":"mlx-community/Nemotron-Labs-Diffusion-3B-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"loaded"},{"id":"mlx-community/diffusiongemma-26B-A4B-it-4bit","type":"llm","generation_type":"text","model_family":"diffusion_text","state":"unsupported","unsupported_reason":"Unsupported by installed mlx-lm runtime"}]}"#
                             .utf8
                     )
                 ),
@@ -1622,7 +1803,7 @@ final class ProviderModelMetadataTests: XCTestCase {
         XCTAssertEqual(catalog.models.map(\.id), [
             "mlx-ask",
             "mlx-plan",
-            "mlx-fast",
+            "mlx-coding",
             diffusionModel,
         ])
         XCTAssertEqual(catalog.model(id: "mlx-ask")?.capability, .chatText)
@@ -1639,13 +1820,22 @@ final class LocalProviderURLValidatorTests: XCTestCase {
         XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123"))
         XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://localhost:8123"))
         XCTAssertNotNil(LocalProviderURLValidator.providerURL(from: "http://[::1]:8123"))
+        XCTAssertEqual(
+            LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123/v1")?.absoluteString,
+            "http://127.0.0.1:8123"
+        )
     }
 
     func testRejectsRemoteAndUnsupportedProviderURLs() {
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "http://192.168.1.10:8123"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "https://127.0.0.1:8123"))
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "https://example.com"))
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "file:///tmp/provider"))
         XCTAssertNil(LocalProviderURLValidator.providerURL(from: "provider"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "http://user:pass@127.0.0.1:8123"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123?token=abc"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123#fragment"))
+        XCTAssertNil(LocalProviderURLValidator.providerURL(from: "http://127.0.0.1:8123/provider/v1/models"))
     }
 }
 
@@ -1698,7 +1888,7 @@ final class MLXChatFileLoggerTests: XCTestCase {
         try MLXChatFileLogger.append(
             level: "notice",
             category: "chat",
-            message: "Send started model=mlx-fast",
+            message: "Send started model=mlx-coding",
             applicationSupportDirectory: root,
             date: Date(timeIntervalSince1970: 0)
         )
@@ -1708,7 +1898,7 @@ final class MLXChatFileLoggerTests: XCTestCase {
             .appending(path: "mlxchat.log")
         let contents = try String(contentsOf: logURL, encoding: .utf8)
 
-        XCTAssertEqual(contents, "1970-01-01T00:00:00Z notice [chat] Send started model=mlx-fast\n")
+        XCTAssertEqual(contents, "1970-01-01T00:00:00Z notice [chat] Send started model=mlx-coding\n")
     }
 }
 
@@ -1807,6 +1997,64 @@ final class StreamingRecordingTransport: HTTPStreamingTransport {
             headerFields: ["Content-Type": "text/event-stream"]
         )!
         let chunks = chunks
+        let stream = AsyncThrowingStream<Data, Error> { continuation in
+            for chunk in chunks {
+                continuation.yield(Data(chunk.utf8))
+            }
+            continuation.finish()
+        }
+        return (stream, response)
+    }
+}
+
+final class SmokeStreamingTransport: HTTPStreamingTransport {
+    private let responses: [String: MockResponse]
+    private let streamStatusCode: Int
+    private let streamChunks: [String]
+    private(set) var requestKeys: [String] = []
+    private(set) var streamRequestPaths: [String] = []
+    private(set) var streamRequestBodies: [String] = []
+
+    init(
+        responses: [String: MockResponse],
+        streamStatusCode: Int,
+        streamChunks: [String]
+    ) {
+        self.responses = responses
+        self.streamStatusCode = streamStatusCode
+        self.streamChunks = streamChunks
+    }
+
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let method = request.httpMethod ?? "GET"
+        let path = request.url?.path ?? ""
+        let key = "\(method) \(path)"
+        requestKeys.append(key)
+
+        guard let response = responses[key] else {
+            throw URLError(.badServerResponse)
+        }
+
+        let httpResponse = HTTPURLResponse(
+            url: request.url!,
+            statusCode: response.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        return (response.body, httpResponse)
+    }
+
+    func stream(_ request: URLRequest) async throws -> (AsyncThrowingStream<Data, Error>, HTTPURLResponse) {
+        streamRequestPaths.append(request.url?.path ?? "")
+        streamRequestBodies.append(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } ?? "")
+
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: streamStatusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/event-stream"]
+        )!
+        let chunks = streamChunks
         let stream = AsyncThrowingStream<Data, Error> { continuation in
             for chunk in chunks {
                 continuation.yield(Data(chunk.utf8))

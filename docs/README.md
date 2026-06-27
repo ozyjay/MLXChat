@@ -22,3 +22,5 @@ The first implemented tool is a lightweight Swift command-line smoke tester for 
   - `--timeout`
   - `--json`
   - `--no-stream`
+
+`--base-url` accepts only local HTTP provider URLs for MLXDashboard, with an optional `/v1` suffix.
