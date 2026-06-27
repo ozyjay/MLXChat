@@ -95,17 +95,20 @@ public struct ChatStreamDelta: Equatable, Sendable {
     public let content: String
     public let finishReason: String?
     public let reasoning: String?
+    public let model: String?
     public let usageState: MLXStreamUsageState?
 
     public init(
         content: String,
         finishReason: String? = nil,
         reasoning: String? = nil,
+        model: String? = nil,
         usageState: MLXStreamUsageState? = nil
     ) {
         self.content = content
         self.finishReason = finishReason
         self.reasoning = reasoning
+        self.model = model
         self.usageState = usageState
     }
 }
@@ -479,7 +482,8 @@ public struct ProviderClient {
                         ChatStreamDelta(
                             content: normalizedContent.content,
                             finishReason: choice.finishReason,
-                            reasoning: normalizedContent.reasoning
+                            reasoning: normalizedContent.reasoning,
+                            model: chunk.model
                         )
                     )
                 }
@@ -823,6 +827,7 @@ public struct ProviderClient {
     }
 
     private struct ChatCompletionStreamChunk: Decodable {
+        let model: String?
         let choices: [ChatCompletionStreamChoice]
     }
 

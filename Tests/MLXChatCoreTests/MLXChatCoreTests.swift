@@ -315,8 +315,8 @@ final class ProviderChatCompletionTests: XCTestCase {
         let transport = StreamingRecordingTransport(
             statusCode: 200,
             chunks: [
-                #"data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}"# + "\n\n",
-                #"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"# + "\n\n",
+                #"data: {"model":"mlx-community/Tiny","choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}"# + "\n\n",
+                #"data: {"model":"mlx-community/Tiny","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"# + "\n\n",
                 "data: [DONE]\n\n",
             ]
         )
@@ -330,12 +330,38 @@ final class ProviderChatCompletionTests: XCTestCase {
         )
 
         XCTAssertEqual(deltas, [
-            ChatStreamDelta(content: "Hel", finishReason: nil),
-            ChatStreamDelta(content: "lo", finishReason: "stop"),
+            ChatStreamDelta(content: "Hel", finishReason: nil, model: "mlx-community/Tiny"),
+            ChatStreamDelta(content: "lo", finishReason: "stop", model: "mlx-community/Tiny"),
         ])
         XCTAssertEqual(transport.requestPaths, ["/v1/chat/completions"])
         XCTAssertTrue(transport.requestBodies.first?.contains(#""stream":true"#) == true)
         XCTAssertTrue(transport.requestBodies.first?.contains(#""stream_options":{"include_usage":true}"#) == true)
+    }
+
+    func testStreamChatParsesLengthFinishReasonAndReportedModel() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"data: {"model":"mlx-community/gpt-oss-20b-MXFP4-Q8","choices":[{"delta":{"content":"Partial"},"finish_reason":"length"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-ask",
+                messages: [ChatTranscriptMessage(role: "user", content: "Say hello")]
+            )
+        )
+
+        XCTAssertEqual(deltas, [
+            ChatStreamDelta(
+                content: "Partial",
+                finishReason: "length",
+                model: "mlx-community/gpt-oss-20b-MXFP4-Q8"
+            ),
+        ])
     }
 
     func testCompleteChatDoesNotSendStreamOptionsForNonStreamingRequest() async throws {
@@ -821,7 +847,7 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertTrue(loaded.messages[1].didFail)
     }
 
-    func testChatDisplayMessagePreservesUsageStateAndDecodesLegacyMessages() throws {
+    func testChatDisplayMessagePreservesResponseMetadataAndDecodesLegacyMessages() throws {
         let usageState = MLXStreamUsageState(
             phase: "completed",
             model: "mlx-community/Tiny",
@@ -837,11 +863,17 @@ final class ConversationStoreTests: XCTestCase {
             id: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
             role: "assistant",
             content: "Done",
+            requestedModel: "mlx-ask",
+            responseModel: "mlx-community/Tiny",
+            finishReason: "length",
             usageState: usageState
         )
 
         let data = try JSONEncoder().encode(message)
         let decoded = try JSONDecoder().decode(ChatDisplayMessage.self, from: data)
+        XCTAssertEqual(decoded.requestedModel, "mlx-ask")
+        XCTAssertEqual(decoded.responseModel, "mlx-community/Tiny")
+        XCTAssertEqual(decoded.finishReason, "length")
         XCTAssertEqual(decoded.usageState, usageState)
 
         let legacyData = Data(
@@ -857,6 +889,9 @@ final class ConversationStoreTests: XCTestCase {
             """.utf8
         )
         let legacy = try JSONDecoder().decode(ChatDisplayMessage.self, from: legacyData)
+        XCTAssertNil(legacy.requestedModel)
+        XCTAssertNil(legacy.responseModel)
+        XCTAssertNil(legacy.finishReason)
         XCTAssertNil(legacy.usageState)
     }
 

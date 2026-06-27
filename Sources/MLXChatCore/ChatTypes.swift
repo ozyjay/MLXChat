@@ -15,6 +15,9 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
     public let role: String
     public var content: String
     public var reasoning: String?
+    public var requestedModel: String?
+    public var responseModel: String?
+    public var finishReason: String?
     public var usageState: MLXStreamUsageState?
     public let createdAt: Date
     public var isStreaming: Bool
@@ -25,6 +28,9 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
         role: String,
         content: String,
         reasoning: String? = nil,
+        requestedModel: String? = nil,
+        responseModel: String? = nil,
+        finishReason: String? = nil,
         usageState: MLXStreamUsageState? = nil,
         createdAt: Date = Date(),
         isStreaming: Bool = false,
@@ -34,6 +40,9 @@ public struct ChatDisplayMessage: Codable, Equatable, Identifiable, Sendable {
         self.role = role
         self.content = content
         self.reasoning = reasoning
+        self.requestedModel = requestedModel
+        self.responseModel = responseModel
+        self.finishReason = finishReason
         self.usageState = usageState
         self.createdAt = createdAt
         self.isStreaming = isStreaming

@@ -300,6 +300,13 @@ struct ChatHeaderView: View {
                     .font(AppFont.label(messageFontSize))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+
+                if let activeSendStatus = viewModel.activeSendStatus {
+                    Text(activeSendStatus)
+                        .font(AppFont.label(messageFontSize, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
@@ -422,6 +429,10 @@ struct ChatBubble: View {
                     StreamUsageView(usageState: usageState, baseFontSize: messageFontSize)
                 }
 
+                if !isUser {
+                    ResponseMetadataView(message: message, baseFontSize: messageFontSize)
+                }
+
                 if message.didFail {
                     Text("Reply interrupted")
                         .font(AppFont.label(messageFontSize))
@@ -440,6 +451,81 @@ struct ChatBubble: View {
     }
 }
 
+struct ResponseMetadataView: View {
+    let message: ChatDisplayMessage
+    let baseFontSize: Double
+
+    private var lines: [MetadataLine] {
+        var values: [MetadataLine] = []
+        if let modelLine {
+            values.append(MetadataLine(icon: "cpu", text: modelLine, isWarning: false))
+        }
+        if let finishLine {
+            values.append(MetadataLine(icon: "exclamationmark.triangle", text: finishLine, isWarning: finishReasonIsWarning))
+        }
+        return values
+    }
+
+    private var modelLine: String? {
+        let requested = message.requestedModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let response = message.responseModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch (requested?.isEmpty == false ? requested : nil, response?.isEmpty == false ? response : nil) {
+        case let (requested?, response?) where requested != response:
+            return "Model: \(requested) -> \(response)"
+        case let (requested?, _):
+            return "Model: \(requested)"
+        case let (_, response?):
+            return "Model: \(response)"
+        default:
+            return nil
+        }
+    }
+
+    private var finishLine: String? {
+        guard let finishReason = message.finishReason?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !finishReason.isEmpty
+        else { return nil }
+
+        if finishReason == "length" {
+            return "Stopped: output limit reached"
+        }
+        return "Finished: \(finishReason.replacingOccurrences(of: "_", with: " "))"
+    }
+
+    private var finishReasonIsWarning: Bool {
+        message.finishReason == "length"
+    }
+
+    var body: some View {
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(lines) { line in
+                    HStack(spacing: 6) {
+                        Image(systemName: line.icon)
+                            .font(AppFont.label(baseFontSize))
+                            .foregroundStyle(line.isWarning ? .orange : .secondary)
+                        Text(line.text)
+                            .font(AppFont.label(baseFontSize))
+                            .foregroundStyle(line.isWarning ? .orange : .secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    private struct MetadataLine: Identifiable {
+        let icon: String
+        let text: String
+        let isWarning: Bool
+
+        var id: String {
+            "\(icon)-\(text)"
+        }
+    }
+}
+
 struct StreamUsageView: View {
     let usageState: MLXStreamUsageState
     let baseFontSize: Double
@@ -451,6 +537,9 @@ struct StreamUsageView: View {
         }
         if let tokenSummary = usageState.tokenSummary {
             values.append(tokenSummary)
+        }
+        if values.isEmpty {
+            values.append("Usage: unknown")
         }
         return values
     }
@@ -772,6 +861,12 @@ private extension MLXStreamUsageState {
     }
 }
 
+private extension String {
+    var nonEmpty: String? {
+        isEmpty ? nil : self
+    }
+}
+
 @MainActor
 final class ChatAppViewModel: ObservableObject {
     private static let appLogger = Logger(subsystem: "MLXChat", category: "app")
@@ -790,6 +885,7 @@ final class ChatAppViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isRefreshing = false
     @Published var isSending = false
+    @Published var activeSendStatus: String?
 
     private var hasConfigured = false
     private let conversationStore = ConversationStore()
@@ -948,11 +1044,15 @@ final class ChatAppViewModel: ObservableObject {
 
         errorMessage = nil
         isSending = true
+        activeSendStatus = "Checking route advice..."
 
         let baselineAlias = requestModelAlias
         let modelForSend = await resolveAliasForSend(prompt: prompt, baseURL: baseURL)
         requestModelAlias = modelForSend
         updateRoutingStatus(alias: modelForSend)
+        activeSendStatus = baselineAlias == modelForSend
+            ? "Using \(modelForSend)"
+            : "Route: \(baselineAlias) -> \(modelForSend)"
 
         let userMessage = ChatDisplayMessage(role: "user", content: prompt)
         messages.append(userMessage)
@@ -965,6 +1065,7 @@ final class ChatAppViewModel: ObservableObject {
                 id: assistantMessageID,
                 role: "assistant",
                 content: "",
+                requestedModel: modelForSend,
                 isStreaming: true
             )
         )
@@ -976,6 +1077,7 @@ final class ChatAppViewModel: ObservableObject {
             let capability = catalog.model(id: modelForSend)?.capability.displayName ?? "Unknown"
             Self.chatLogger.notice("Send started routingAlias=\(modelForSend, privacy: .public) baselineAlias=\(baselineAlias, privacy: .public) capability=\(capability, privacy: .public) transcriptMessages=\(self.messages.count, privacy: .public) promptCharacters=\(prompt.count, privacy: .public)")
             logChatNotice("Send started routingAlias=\(modelForSend) baselineAlias=\(baselineAlias) capability=\(capability) transcriptMessages=\(self.messages.count) promptCharacters=\(prompt.count)")
+            activeSendStatus = "Streaming from \(modelForSend)"
             var replyCharacters = 0
             for try await delta in client.streamChat(model: modelForSend, messages: transcript) {
                 guard let index = messages.firstIndex(where: { $0.id == assistantMessageID }) else {
@@ -997,8 +1099,22 @@ final class ChatAppViewModel: ObservableObject {
                     transcriptRevision += 1
                     persistActiveConversation(debounced: true)
                 }
+                if let responseModel = delta.model, !responseModel.isEmpty {
+                    messages[index].responseModel = responseModel
+                    activeSendStatus = "Streaming from \(responseModel)"
+                    transcriptRevision += 1
+                    persistActiveConversation(debounced: true)
+                }
+                if let finishReason = delta.finishReason, !finishReason.isEmpty {
+                    messages[index].finishReason = finishReason
+                    transcriptRevision += 1
+                    persistActiveConversation(debounced: true)
+                }
                 if let usageState = delta.usageState {
                     messages[index].usageState = usageState
+                    if let usageModel = usageState.model, !usageModel.isEmpty {
+                        messages[index].responseModel = usageModel
+                    }
                     transcriptRevision += 1
                     persistActiveConversation(debounced: true)
                 }
@@ -1009,9 +1125,12 @@ final class ChatAppViewModel: ObservableObject {
             }
             transcriptRevision += 1
             persistActiveConversation()
-            let usageText = messages.first(where: { $0.id == assistantMessageID })?.usageState?.logDescription ?? "unknown"
-            Self.chatLogger.notice("Send finished routingAlias=\(modelForSend, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public) usage=\(usageText, privacy: .public)")
-            logChatNotice("Send finished routingAlias=\(modelForSend) status=stream replyCharacters=\(replyCharacters) usage=\(usageText)")
+            let finishedMessage = messages.first(where: { $0.id == assistantMessageID })
+            let usageText = finishedMessage?.usageState?.logDescription.nonEmpty ?? "unknown"
+            let responseModel = finishedMessage?.responseModel ?? "unknown"
+            let finishReason = finishedMessage?.finishReason ?? "unknown"
+            Self.chatLogger.notice("Send finished routingAlias=\(modelForSend, privacy: .public) responseModel=\(responseModel, privacy: .public) finishReason=\(finishReason, privacy: .public) status=stream replyCharacters=\(replyCharacters, privacy: .public) usage=\(usageText, privacy: .public)")
+            logChatNotice("Send finished routingAlias=\(modelForSend) responseModel=\(responseModel) finishReason=\(finishReason) status=stream replyCharacters=\(replyCharacters) usage=\(usageText)")
         } catch {
             if let index = messages.firstIndex(where: { $0.id == assistantMessageID }) {
                 messages[index].isStreaming = false
@@ -1025,16 +1144,19 @@ final class ChatAppViewModel: ObservableObject {
         }
 
         isSending = false
+        activeSendStatus = nil
     }
 
     private func resolveAliasForSend(prompt: String, baseURL: URL) async -> String {
         let baselineAlias = requestModelAlias
         guard catalog.supportsModeAdvice(baseURL: baseURL) else {
+            activeSendStatus = "Using \(baselineAlias)"
             return baselineAlias
         }
 
-        let adviceClient = ProviderClient(baseURL: baseURL, timeout: 1.5)
+        let adviceClient = ProviderClient(baseURL: baseURL, timeout: 6)
         do {
+            activeSendStatus = "Waiting for route advice..."
             let advice = try await adviceClient.fetchModeAdvice(
                 input: prompt,
                 selectedModel: baselineAlias
@@ -1042,8 +1164,12 @@ final class ChatAppViewModel: ObservableObject {
             let suggestedAlias = ModeAdviceCoordinator.alias(for: advice.suggestedMode)
             let alias = suggestedAlias.flatMap { catalog.canSend(with: $0) ? $0 : nil } ?? baselineAlias
             updateRoutingStatus(alias: alias, advice: advice)
+            activeSendStatus = alias == baselineAlias
+                ? "Route advice kept \(baselineAlias)"
+                : "Route advice selected \(alias)"
             return alias
         } catch {
+            activeSendStatus = "Route advice unavailable; using \(baselineAlias)"
             return baselineAlias
         }
     }
