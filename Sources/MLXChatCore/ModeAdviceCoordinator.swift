@@ -53,7 +53,8 @@ public struct ModeAdviceSwitchPrompt: Equatable, Sendable {
 }
 
 public enum ModeAdviceCoordinator {
-    private static let modeAliases = Set(["mlx-ask", "mlx-plan", "mlx-coding"])
+    private static let canonicalModeAliases = ["mlx-ask", "mlx-plan", "mlx-coding"]
+    private static let modeAliases = Set(canonicalModeAliases)
 
     public static func modeAdviceInput(
         from messages: [ChatTranscriptMessage],
@@ -191,6 +192,49 @@ public enum ModeAdviceCoordinator {
         }
 
         return baselineAlias
+    }
+
+    public static func modeSelectionAnnotation(for alias: String) -> ChatTranscriptMessage? {
+        switch alias {
+        case "mlx-plan":
+            return ChatTranscriptMessage(
+                role: "system",
+                content: """
+                Mode: plan. The user explicitly selected planning mode for this request. Treat the following user prompt as a planning request: focus on architecture, sequencing, task decomposition, risks, and next steps before implementation details.
+                """
+            )
+        case "mlx-ask":
+            return ChatTranscriptMessage(
+                role: "system",
+                content: """
+                Mode: ask. The user explicitly selected ask mode for this request. Treat the following user prompt as a direct question: answer clearly and avoid turning it into an implementation plan unless the user asks for one.
+                """
+            )
+        case "mlx-coding":
+            return ChatTranscriptMessage(
+                role: "system",
+                content: """
+                Mode: coding. The user explicitly selected coding mode for this request. Treat the following user prompt as an implementation request: focus on concrete code, edits, debugging, tests, and verification.
+                """
+            )
+        default:
+            return nil
+        }
+    }
+
+    public static func availableModeChoiceAliases(in catalog: ProviderModelCatalog) -> [String] {
+        canonicalModeAliases.filter { catalog.canSend(with: $0) }
+    }
+
+    public static func annotatedTranscript(
+        _ messages: [ChatTranscriptMessage],
+        explicitModeAlias alias: String?
+    ) -> [ChatTranscriptMessage] {
+        guard let alias,
+              let annotation = modeSelectionAnnotation(for: alias)
+        else { return messages }
+
+        return [annotation] + messages
     }
 
     public static func isModeAlias(_ model: String) -> Bool {

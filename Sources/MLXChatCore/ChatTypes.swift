@@ -67,6 +67,28 @@ public struct MLXStreamUsageState: Codable, Equatable, Sendable {
             || tokens.totalTokens != nil
     }
 
+    public var displayLines: [String] {
+        var lines: [String] = []
+        if phase == "started" {
+            lines.append("Usage: streaming")
+        } else if phase == "completed" {
+            lines.append("Usage: completed")
+        } else if !phase.isEmpty {
+            lines.append("Usage: \(phase.replacingOccurrences(of: "_", with: " "))")
+        }
+
+        if let contextLine {
+            lines.append(contextLine)
+        }
+        if let tokenLine {
+            lines.append(tokenLine)
+        }
+        if lines == ["Usage: completed"] {
+            lines[0] = "Usage: not reported by provider"
+        }
+        return lines
+    }
+
     public init(
         phase: String,
         model: String? = nil,
@@ -78,6 +100,75 @@ public struct MLXStreamUsageState: Codable, Equatable, Sendable {
         self.context = context
         self.tokens = tokens
     }
+
+    private var contextLine: String? {
+        switch (context.usedTokens, context.limitTokens, context.remainingTokens, context.usageRatio) {
+        case let (used?, limit?, remaining?, ratio?):
+            "Context: \(Self.format(used)) / \(Self.format(limit)) used (\(Self.percent(ratio))) - \(Self.format(remaining)) remaining"
+        case let (used?, limit?, _, ratio?):
+            "Context: \(Self.format(used)) / \(Self.format(limit)) used (\(Self.percent(ratio)))"
+        case let (used?, limit?, remaining?, _):
+            "Context: \(Self.format(used)) / \(Self.format(limit)) used - \(Self.format(remaining)) remaining"
+        case let (used?, limit?, _, _):
+            "Context: \(Self.format(used)) / \(Self.format(limit)) used"
+        case let (_, limit?, remaining?, ratio?):
+            "Context: \(Self.format(limit)) limit (\(Self.percent(ratio))) - \(Self.format(remaining)) remaining"
+        case let (_, limit?, remaining?, _):
+            "Context: \(Self.format(limit)) limit - \(Self.format(remaining)) remaining"
+        case let (_, limit?, _, _):
+            "Context: \(Self.format(limit)) limit"
+        case let (used?, _, remaining?, ratio?):
+            "Context: \(Self.format(used)) used (\(Self.percent(ratio))) - \(Self.format(remaining)) remaining"
+        case let (used?, _, _, ratio?):
+            "Context: \(Self.format(used)) used (\(Self.percent(ratio)))"
+        case let (used?, _, remaining?, _):
+            "Context: \(Self.format(used)) used - \(Self.format(remaining)) remaining"
+        case let (used?, _, _, _):
+            "Context: \(Self.format(used)) used"
+        case let (_, _, remaining?, ratio?):
+            "Context: \(Self.percent(ratio)) - \(Self.format(remaining)) remaining"
+        case let (_, _, remaining?, _):
+            "Context: \(Self.format(remaining)) remaining"
+        case let (_, _, _, ratio?):
+            "Context: \(Self.percent(ratio))"
+        default:
+            nil
+        }
+    }
+
+    private var tokenLine: String? {
+        let parts = [
+            tokens.inputTokens.map { "\(Self.format($0)) in" },
+            tokens.outputTokens.map { "\(Self.format($0)) out" },
+            tokens.totalTokens.map { "\(Self.format($0)) total" },
+        ]
+        .compactMap { $0 }
+
+        guard !parts.isEmpty else { return nil }
+        return "Tokens: \(parts.joined(separator: " / "))"
+    }
+
+    private static func format(_ value: Int) -> String {
+        tokenFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private static func percent(_ ratio: Double) -> String {
+        let percent = max(0, ratio * 100)
+        return percentFormatter.string(from: NSNumber(value: percent / 100)) ?? "\(Int(percent.rounded()))%"
+    }
+
+    private static let tokenFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter
+    }()
+
+    private static let percentFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .percent
+        formatter.maximumFractionDigits = 1
+        return formatter
+    }()
 }
 
 public struct MLXStreamUsageContext: Codable, Equatable, Sendable {

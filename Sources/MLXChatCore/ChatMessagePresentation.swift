@@ -81,7 +81,10 @@ public enum ChatMessagePresentation {
             || content.contains("<|end|>")
             || content.contains("<|start|>")
         else {
-            return NormalizedAssistantContent(content: content, reasoning: emptyToNil(reasoning ?? ""))
+            return NormalizedAssistantContent(
+                content: content,
+                reasoning: normalizedReasoning(reasoning)
+            )
         }
 
         let segments = channelMarkedSegments(from: content)
@@ -99,6 +102,22 @@ public enum ChatMessagePresentation {
         return NormalizedAssistantContent(
             content: joinedMessageText(finalTexts),
             reasoning: joinedReasoning([reasoning, joinedMessageText(reasoningTexts)])
+        )
+    }
+
+    public static func appendingReasoning(_ existing: String?, delta: String) -> String? {
+        let deltaText = delta.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !deltaText.isEmpty else {
+            return normalizedReasoning(existing)
+        }
+        guard let existing = existing?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !existing.isEmpty
+        else {
+            return formatReasoningText(deltaText)
+        }
+
+        return formatReasoningText(
+            existing + separatorBetweenReasoningFragments(existing, deltaText) + deltaText
         )
     }
 
@@ -217,7 +236,147 @@ public enum ChatMessagePresentation {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
-        return emptyToNil(text)
+        return normalizedReasoning(text)
+    }
+
+    private static func normalizedReasoning(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard looksLikeParagraphSeparatedTokenFragments(trimmed) else {
+            return formatReasoningText(trimmed)
+        }
+        return emptyToNil(repairParagraphSeparatedReasoningFragments(trimmed))
+    }
+
+    private static func looksLikeParagraphSeparatedTokenFragments(_ text: String) -> Bool {
+        let fragments = text.components(separatedBy: "\n\n")
+        guard fragments.count >= 8 else { return false }
+        let nonEmptyFragments = fragments.filter { !$0.isEmpty }
+        guard nonEmptyFragments.count == fragments.count else { return false }
+
+        let shortFragments = nonEmptyFragments.filter {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).count <= 12
+        }
+        let shortRatio = Double(shortFragments.count) / Double(nonEmptyFragments.count)
+        let averageLength = Double(
+            nonEmptyFragments.reduce(0) {
+                $0 + $1.trimmingCharacters(in: .whitespacesAndNewlines).count
+            }
+        ) / Double(nonEmptyFragments.count)
+
+        return shortRatio >= 0.7 || averageLength <= 8
+    }
+
+    private static func repairParagraphSeparatedReasoningFragments(_ text: String) -> String {
+        let fragments = text
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        let combined = fragments.reduce("") { partial, fragment in
+            guard !partial.isEmpty else { return fragment }
+            return partial + separatorBetweenReasoningFragments(partial, fragment) + fragment
+        }
+        return formatReasoningText(combined) ?? combined
+    }
+
+    private static func separatorBetweenReasoningFragments(
+        _ existing: String,
+        _ fragment: String
+    ) -> String {
+        guard let last = existing.last, let first = fragment.first else {
+            return ""
+        }
+        if last.isWhitespace || first.isWhitespace {
+            return ""
+        }
+        if fragment == "-" {
+            return "\n"
+        }
+        if fragment == "**" {
+            return last == "." || last == "-" ? " " : ""
+        }
+        if existing.hasSuffix(":**") {
+            return " "
+        }
+        if existing.hasSuffix("**") {
+            return ""
+        }
+        if fragment.hasPrefix("'")
+            || fragment.hasPrefix(":")
+            || [".", ",", ";", "?", "!", ")", "]", "}"].contains(String(first))
+        {
+            return ""
+        }
+        if last == ":" || (last == "." && fragment.first?.isNumber == true) {
+            return "\n"
+        }
+        if existing.hasSuffix("'s") || existing.hasSuffix("n't") {
+            return " "
+        }
+
+        let previousWord = trailingLetters(in: existing).lowercased()
+        let nextWord = leadingLetters(in: fragment).lowercased()
+        let joiningSuffixes = Set([
+            "ing", "ed", "er", "ers", "ly", "ment", "tion", "sion", "able",
+            "ible", "al", "ive", "ous", "stand", "script",
+        ])
+        if joiningSuffixes.contains(nextWord) {
+            return ""
+        }
+        let shortWords = Set([
+            "a", "an", "the", "to", "of", "and", "or", "for", "with", "in",
+            "on", "by", "is", "are", "be", "as", "only", "create", "single",
+        ])
+        if shortWords.contains(previousWord) {
+            return " "
+        }
+        if last.isLowercase && first.isLowercase {
+            return nextWord.count <= 3 ? "" : " "
+        }
+        if last.isLowercase && first.isUppercase {
+            return " "
+        }
+        if last.isUppercase && first.isLowercase {
+            return previousWord.count == 1 ? "" : " "
+        }
+        if last.isNumber && first.isLetter {
+            return " "
+        }
+        return " "
+    }
+
+    private static func formatReasoningText(_ text: String?) -> String? {
+        guard var text = emptyToNil(text ?? "") else { return nil }
+        let replacements = [
+            (":1.", ":\n1."),
+            (": 1.", ":\n1."),
+            (".**", ". **"),
+            ("-**", "- **"),
+            (":**", ":**"),
+            (" - **", "\n- **"),
+        ]
+        for replacement in replacements {
+            text = text.replacingOccurrences(of: replacement.0, with: replacement.1)
+        }
+        while text.contains("  ") {
+            text = text.replacingOccurrences(of: "  ", with: " ")
+        }
+        return emptyToNil(
+            text
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .joined(separator: "\n")
+        )
+    }
+
+    private static func trailingLetters(in text: String) -> String {
+        String(text.reversed().prefix { $0.isLetter }.reversed())
+    }
+
+    private static func leadingLetters(in text: String) -> String {
+        String(text.prefix { $0.isLetter })
     }
 }
 

@@ -42,11 +42,15 @@ public protocol HTTPStreamingTransport: HTTPTransport {
 
 public struct URLSessionHTTPTransport: HTTPTransport {
     private let session: URLSession
+    let requestTimeout: TimeInterval
+    let resourceTimeout: TimeInterval
 
-    public init(timeout: TimeInterval) {
+    public init(timeout: TimeInterval, resourceTimeout: TimeInterval = 0) {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
+        configuration.timeoutIntervalForResource = resourceTimeout
+        requestTimeout = timeout
+        self.resourceTimeout = resourceTimeout
         session = URLSession(configuration: configuration)
     }
 

@@ -231,6 +231,15 @@ final class SmokeTestRunnerTests: XCTestCase {
     }
 }
 
+final class URLSessionHTTPTransportTests: XCTestCase {
+    func testDefaultTransportDoesNotCapStreamingResourceLifetime() {
+        let transport = URLSessionHTTPTransport(timeout: 60)
+
+        XCTAssertEqual(transport.requestTimeout, 60)
+        XCTAssertEqual(transport.resourceTimeout, 0)
+    }
+}
+
 final class ProviderChatCompletionTests: XCTestCase {
     func testCompleteChatParsesAssistantMessageContent() async throws {
         let transport = FakeTransport(
@@ -821,6 +830,47 @@ final class ChatMessagePresentationTests: XCTestCase {
         XCTAssertFalse(result.content.contains("assistantfinal"))
     }
 
+    func testAssistantReasoningRepairsSavedTokenFragmentParagraphs() {
+        let result = ChatMessagePresentation.normalizedAssistantContent(
+            content: "Final answer.",
+            reasoning: "Here\n\n's\n\n a\n\n thinking\n\n process\n\n:\n\n1\n\n.\n\n  **\n\nUnder\n\nstand\n\n User\n\n Request\n\n:**\n\n -\n\n **\n\nGoal\n\n:**\n\n Create\n\n a\n\n P\n\nong\n\n game"
+        )
+
+        XCTAssertEqual(result.content, "Final answer.")
+        XCTAssertEqual(
+            result.reasoning,
+            """
+            Here's a thinking process:
+            1. **Understand User Request:**
+            - **Goal:** Create a Pong game
+            """
+        )
+    }
+
+    func testAssistantReasoningAppendPreservesStreamingTokenSpacing() {
+        var combined = ChatMessagePresentation.appendingReasoning("Here", delta: "'s")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "a")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "thinking")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "process")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: ":")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "1")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: ".")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "**")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "Under")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "stand")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "User")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: "Request")
+        combined = ChatMessagePresentation.appendingReasoning(combined, delta: ":**")
+
+        XCTAssertEqual(
+            combined,
+            """
+            Here's a thinking process:
+            1. **Understand User Request:**
+            """
+        )
+    }
+
     func testAssistantContentBlocksNormaliseChannelMarkedSavedContent() {
         let blocks = ChatMessagePresentation.contentBlocks(
             role: "assistant",
@@ -1040,6 +1090,62 @@ final class ConversationStoreTests: XCTestCase {
                 tokens: MLXStreamUsageTokens(inputTokens: 10, outputTokens: 4, totalTokens: 14)
             ).hasDisplayableUsageData
         )
+    }
+
+    func testUsageStateDisplayLinesShowProgressiveContextAndTokenCounts() {
+        let usageState = MLXStreamUsageState(
+            phase: "started",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(
+                limitTokens: 32768,
+                usedTokens: 1536,
+                remainingTokens: 31232,
+                usageRatio: 0.046875
+            ),
+            tokens: MLXStreamUsageTokens(
+                inputTokens: 120,
+                outputTokens: 45,
+                totalTokens: 165
+            )
+        )
+
+        XCTAssertEqual(
+            usageState.displayLines,
+            [
+                "Usage: streaming",
+                "Context: 1,536 / 32,768 used (4.7%) - 31,232 remaining",
+                "Tokens: 120 in / 45 out / 165 total",
+            ]
+        )
+    }
+
+    func testUsageStateDisplayLinesShowPartialProgressiveTokenCounts() {
+        let usageState = MLXStreamUsageState(
+            phase: "started",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(limitTokens: 32768),
+            tokens: MLXStreamUsageTokens(outputTokens: 45)
+        )
+
+        XCTAssertEqual(
+            usageState.displayLines,
+            [
+                "Usage: streaming",
+                "Context: 32,768 limit",
+                "Tokens: 45 out",
+            ]
+        )
+    }
+
+    func testUsageStateDisplayLinesShowCompletedFallbackWhenNoUsageReported() {
+        let usageState = MLXStreamUsageState(
+            phase: "completed",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(),
+            tokens: MLXStreamUsageTokens()
+        )
+
+        XCTAssertEqual(usageState.displayLines, ["Usage: not reported by provider"])
     }
 
     func testDeleteConversationRemovesFileAndIndexEntry() throws {
@@ -1341,6 +1447,76 @@ final class ProviderModeAdviceTests: XCTestCase {
         )
 
         XCTAssertEqual(modelID, "mlx-community/Explicit")
+    }
+
+    func testAvailableModeChoicesIncludeOnlySendableCanonicalAliases() {
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(id: "mlx-ask", capability: .chatText, state: "loaded"),
+                ProviderModelMetadata(id: "mlx-plan", capability: .chatText, state: "loaded"),
+                ProviderModelMetadata(id: "mlx-coding", capability: .unsupported(reason: "missing"), state: "unsupported"),
+                ProviderModelMetadata(id: "mlx-community/Explicit", capability: .chatText, state: "loaded"),
+            ]
+        )
+
+        XCTAssertEqual(
+            ModeAdviceCoordinator.availableModeChoiceAliases(in: catalog),
+            ["mlx-ask", "mlx-plan"]
+        )
+    }
+
+    func testExplicitCodingChoiceAnnotationIsAvailableForThreeWayPicker() {
+        let annotation = ModeAdviceCoordinator.modeSelectionAnnotation(for: "mlx-coding")
+
+        XCTAssertEqual(annotation?.role, "system")
+        XCTAssertTrue(annotation?.content.contains("Mode: coding") == true)
+        XCTAssertTrue(annotation?.content.contains("coding mode") == true)
+    }
+
+    func testExplicitPlanChoiceAnnotatesProviderTranscriptWithoutChangingUserPrompt() async throws {
+        let transport = RecordingTransport(
+            response: MockResponse(
+                statusCode: 200,
+                body: Data(#"{"id":"chat","model":"mlx-plan","choices":[{"index":0,"message":{"role":"assistant","content":"plan"}}]}"#.utf8)
+            )
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+        let messages = ModeAdviceCoordinator.annotatedTranscript(
+            [ChatTranscriptMessage(role: "user", content: "How can I create a Pong SPA?")],
+            explicitModeAlias: "mlx-plan"
+        )
+
+        _ = try await client.completeChat(model: "mlx-plan", messages: messages)
+
+        XCTAssertEqual(transport.requestBodies.count, 1)
+        XCTAssertTrue(transport.requestBodies[0].contains(#""role":"system""#))
+        XCTAssertTrue(transport.requestBodies[0].contains("Mode: plan"))
+        XCTAssertTrue(transport.requestBodies[0].contains("planning mode"))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""role":"user""#))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""content":"How can I create a Pong SPA?""#))
+    }
+
+    func testExplicitAskChoiceAnnotatesProviderTranscriptWithoutChangingUserPrompt() async throws {
+        let transport = RecordingTransport(
+            response: MockResponse(
+                statusCode: 200,
+                body: Data(#"{"id":"chat","model":"mlx-ask","choices":[{"index":0,"message":{"role":"assistant","content":"answer"}}]}"#.utf8)
+            )
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+        let messages = ModeAdviceCoordinator.annotatedTranscript(
+            [ChatTranscriptMessage(role: "user", content: "How can I create a Pong SPA?")],
+            explicitModeAlias: "mlx-ask"
+        )
+
+        _ = try await client.completeChat(model: "mlx-ask", messages: messages)
+
+        XCTAssertEqual(transport.requestBodies.count, 1)
+        XCTAssertTrue(transport.requestBodies[0].contains(#""role":"system""#))
+        XCTAssertTrue(transport.requestBodies[0].contains("Mode: ask"))
+        XCTAssertTrue(transport.requestBodies[0].contains("ask mode"))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""role":"user""#))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""content":"How can I create a Pong SPA?""#))
     }
 
     func testHighConfidencePlanAdviceBuildsSwitchPromptAndAcceptingUsesPlanAlias() async throws {

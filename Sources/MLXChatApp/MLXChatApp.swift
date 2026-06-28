@@ -281,8 +281,7 @@ struct ChatPaneView: View {
                 Divider()
                 RouteChoiceBanner(
                     prompt: routeChoicePrompt,
-                    useSuggestedAction: viewModel.useSuggestedRoute,
-                    keepCurrentAction: viewModel.keepCurrentRoute
+                    selectAction: viewModel.selectRouteChoice
                 )
             }
 
@@ -297,7 +296,7 @@ struct ChatPaneView: View {
 struct RouteChoicePrompt: Identifiable, Equatable {
     let id = UUID()
     let currentAlias: String
-    let suggestedAlias: String
+    let choices: [String]
     let reason: String
 
     var title: String {
@@ -305,14 +304,13 @@ struct RouteChoicePrompt: Identifiable, Equatable {
     }
 
     var detail: String {
-        "\(reason) Use \(suggestedAlias) for this send, or keep \(currentAlias)?"
+        "\(reason) Choose a mode for this send."
     }
 }
 
 struct RouteChoiceBanner: View {
     let prompt: RouteChoicePrompt
-    let useSuggestedAction: () -> Void
-    let keepCurrentAction: () -> Void
+    let selectAction: (String) -> Void
     @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
 
     var body: some View {
@@ -331,16 +329,54 @@ struct RouteChoiceBanner: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button("Keep \(prompt.currentAlias)", action: keepCurrentAction)
-                .font(AppFont.label(messageFontSize))
-
-            Button("Use \(prompt.suggestedAlias)", action: useSuggestedAction)
-                .font(AppFont.label(messageFontSize, weight: .semibold))
-                .buttonStyle(.borderedProminent)
+            ForEach(prompt.choices, id: \.self) { alias in
+                RouteChoiceButton(
+                    alias: alias,
+                    isCurrent: alias == prompt.currentAlias,
+                    baseFontSize: messageFontSize,
+                    selectAction: selectAction
+                )
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 10)
         .background(Color.accentColor.opacity(0.10))
+    }
+}
+
+struct RouteChoiceButton: View {
+    let alias: String
+    let isCurrent: Bool
+    let baseFontSize: Double
+    let selectAction: (String) -> Void
+
+    var body: some View {
+        if isCurrent {
+            Button(modeButtonTitle) {
+                selectAction(alias)
+            }
+            .font(AppFont.label(baseFontSize, weight: .semibold))
+            .buttonStyle(.borderedProminent)
+        } else {
+            Button(modeButtonTitle) {
+                selectAction(alias)
+            }
+            .font(AppFont.label(baseFontSize))
+            .buttonStyle(.bordered)
+        }
+    }
+
+    private var modeButtonTitle: String {
+        switch alias {
+        case "mlx-ask":
+            return "Ask"
+        case "mlx-plan":
+            return "Plan"
+        case "mlx-coding":
+            return "Coding"
+        default:
+            return alias
+        }
     }
 }
 
@@ -593,17 +629,7 @@ struct StreamUsageView: View {
     let baseFontSize: Double
 
     private var lines: [String] {
-        var values: [String] = []
-        if let limitTokens = usageState.context.limitTokens {
-            values.append("Context: \(Self.tokenFormatter.string(from: NSNumber(value: limitTokens)) ?? "\(limitTokens)")")
-        }
-        if let tokenSummary = usageState.tokenSummary {
-            values.append(tokenSummary)
-        }
-        if values.isEmpty, usageState.phase == "completed" {
-            values.append("Usage: not reported by provider")
-        }
-        return values
+        usageState.displayLines
     }
 
     var body: some View {
@@ -620,12 +646,6 @@ struct StreamUsageView: View {
             .padding(.top, 2)
         }
     }
-
-    private static let tokenFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        return formatter
-    }()
 }
 
 struct ThinkingPanel: View {
@@ -982,7 +1002,8 @@ final class ChatAppViewModel: ObservableObject {
     private let conversationStore = ConversationStore()
     private var activeConversation: StoredConversation?
     private var saveTask: Task<Void, Never>?
-    private var routeChoiceContinuation: CheckedContinuation<Bool, Never>?
+    private var routeChoiceContinuation: CheckedContinuation<String, Never>?
+    private var pendingExplicitModeAlias: String?
 
     private var catalog: ProviderModelCatalog {
         ProviderModelCatalog(models: models)
@@ -996,12 +1017,8 @@ final class ChatAppViewModel: ObservableObject {
             && catalog.canSend(with: requestModelAlias)
     }
 
-    func useSuggestedRoute() {
-        finishRouteChoice(useSuggested: true)
-    }
-
-    func keepCurrentRoute() {
-        finishRouteChoice(useSuggested: false)
+    func selectRouteChoice(_ alias: String) {
+        finishRouteChoice(alias: alias)
     }
 
     func configure(baseURLText: String) {
@@ -1144,6 +1161,7 @@ final class ChatAppViewModel: ObservableObject {
 
         errorMessage = nil
         isSending = true
+        pendingExplicitModeAlias = nil
         activeSendStatus = "Checking route advice..."
 
         let baselineAlias = requestModelAlias
@@ -1161,7 +1179,11 @@ final class ChatAppViewModel: ObservableObject {
         let userMessage = ChatDisplayMessage(role: "user", content: prompt)
         messages.append(userMessage)
         draftMessage = ""
-        let transcript = messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) }
+        let transcript = ModeAdviceCoordinator.annotatedTranscript(
+            messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) },
+            explicitModeAlias: pendingExplicitModeAlias
+        )
+        pendingExplicitModeAlias = nil
 
         let assistantMessageID = UUID()
         messages.append(
@@ -1194,12 +1216,10 @@ final class ChatAppViewModel: ObservableObject {
                     persistActiveConversation(debounced: true)
                 }
                 if let reasoning = delta.reasoning, !reasoning.isEmpty {
-                    if let existingReasoning = messages[index].reasoning,
-                       !existingReasoning.isEmpty {
-                        messages[index].reasoning = "\(existingReasoning)\n\n\(reasoning)"
-                    } else {
-                        messages[index].reasoning = reasoning
-                    }
+                    messages[index].reasoning = ChatMessagePresentation.appendingReasoning(
+                        messages[index].reasoning,
+                        delta: reasoning
+                    )
                     transcriptRevision += 1
                     persistActiveConversation(debounced: true)
                 }
@@ -1277,10 +1297,9 @@ final class ChatAppViewModel: ObservableObject {
                 return suggestedAlias
             }
 
-            let alias = await promptForHeuristicRouteIfNeeded(
-                prompt: prompt,
+            let alias = await promptForRouteChoiceIfNeeded(
                 baselineAlias: baselineAlias,
-                reason: "The prompt looks planning-oriented, but Dashboard did not make a confident route suggestion."
+                reason: "Dashboard did not make a confident route suggestion."
             )
             updateRoutingStatus(alias: alias, advice: advice)
             activeSendStatus = alias == baselineAlias
@@ -1288,10 +1307,9 @@ final class ChatAppViewModel: ObservableObject {
                 : "Route advice selected \(alias)"
             return alias
         } catch {
-            let alias = await promptForHeuristicRouteIfNeeded(
-                prompt: prompt,
+            let alias = await promptForRouteChoiceIfNeeded(
                 baselineAlias: baselineAlias,
-                reason: "Route advice was unavailable, but the prompt looks planning-oriented."
+                reason: "Route advice was unavailable."
             )
             activeSendStatus = alias == baselineAlias
                 ? "Route advice unavailable; using \(baselineAlias)"
@@ -1301,36 +1319,32 @@ final class ChatAppViewModel: ObservableObject {
         }
     }
 
-    private func promptForHeuristicRouteIfNeeded(
-        prompt: String,
+    private func promptForRouteChoiceIfNeeded(
         baselineAlias: String,
         reason: String
     ) async -> String {
-        let suggestedAlias = ModeAdviceCoordinator.heuristicAliasForPrompt(
-            prompt,
-            baselineAlias: baselineAlias,
-            catalog: catalog
-        )
-        guard suggestedAlias != baselineAlias else {
+        let choices = ModeAdviceCoordinator.availableModeChoiceAliases(in: catalog)
+        guard !choices.isEmpty else {
             return baselineAlias
         }
 
         activeSendStatus = "Route advice unsure; waiting for your choice"
-        let shouldUseSuggested = await askForRouteChoice(
+        let selectedAlias = await askForRouteChoice(
             currentAlias: baselineAlias,
-            suggestedAlias: suggestedAlias,
+            choices: choices,
             reason: reason
         )
-        return shouldUseSuggested ? suggestedAlias : baselineAlias
+        pendingExplicitModeAlias = selectedAlias
+        return selectedAlias
     }
 
     private func askForRouteChoice(
         currentAlias: String,
-        suggestedAlias: String,
+        choices: [String],
         reason: String
-    ) async -> Bool {
+    ) async -> String {
         if let routeChoiceContinuation {
-            routeChoiceContinuation.resume(returning: false)
+            routeChoiceContinuation.resume(returning: currentAlias)
             self.routeChoiceContinuation = nil
         }
 
@@ -1338,15 +1352,15 @@ final class ChatAppViewModel: ObservableObject {
             routeChoiceContinuation = continuation
             routeChoicePrompt = RouteChoicePrompt(
                 currentAlias: currentAlias,
-                suggestedAlias: suggestedAlias,
+                choices: choices,
                 reason: reason
             )
         }
     }
 
-    private func finishRouteChoice(useSuggested: Bool) {
+    private func finishRouteChoice(alias: String) {
         routeChoicePrompt = nil
-        routeChoiceContinuation?.resume(returning: useSuggested)
+        routeChoiceContinuation?.resume(returning: alias)
         routeChoiceContinuation = nil
     }
 
