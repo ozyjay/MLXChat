@@ -56,6 +56,17 @@ public struct MLXStreamUsageState: Codable, Equatable, Sendable {
     public let context: MLXStreamUsageContext
     public let tokens: MLXStreamUsageTokens
 
+    public var hasDisplayableUsageData: Bool {
+        phase == "completed"
+            || context.limitTokens != nil
+            || context.usedTokens != nil
+            || context.remainingTokens != nil
+            || context.usageRatio != nil
+            || tokens.inputTokens != nil
+            || tokens.outputTokens != nil
+            || tokens.totalTokens != nil
+    }
+
     public init(
         phase: String,
         model: String? = nil,

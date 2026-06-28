@@ -72,6 +72,10 @@ public enum ChatMessagePresentation {
         content: String,
         reasoning: String?
     ) -> NormalizedAssistantContent {
+        if let compactContent = normalizedBareCompactChannelContent(content: content, reasoning: reasoning) {
+            return compactContent
+        }
+
         guard content.contains("<|channel|>")
             || content.contains("<|message|>")
             || content.contains("<|end|>")
@@ -95,6 +99,24 @@ public enum ChatMessagePresentation {
         return NormalizedAssistantContent(
             content: joinedMessageText(finalTexts),
             reasoning: joinedReasoning([reasoning, joinedMessageText(reasoningTexts)])
+        )
+    }
+
+    private static func normalizedBareCompactChannelContent(
+        content: String,
+        reasoning: String?
+    ) -> NormalizedAssistantContent? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("analysis"),
+              let finalRange = trimmed.range(of: "assistantfinal")
+        else { return nil }
+
+        let analysisStart = trimmed.index(trimmed.startIndex, offsetBy: "analysis".count)
+        let analysisText = String(trimmed[analysisStart..<finalRange.lowerBound])
+        let finalText = String(trimmed[finalRange.upperBound...])
+        return NormalizedAssistantContent(
+            content: finalText.trimmingCharacters(in: .whitespacesAndNewlines),
+            reasoning: joinedReasoning([reasoning, analysisText])
         )
     }
 

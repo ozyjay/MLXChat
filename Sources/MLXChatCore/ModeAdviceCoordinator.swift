@@ -53,6 +53,32 @@ public struct ModeAdviceSwitchPrompt: Equatable, Sendable {
 }
 
 public enum ModeAdviceCoordinator {
+    private static let modeAliases = Set(["mlx-ask", "mlx-plan", "mlx-coding"])
+
+    public static func modeAdviceInput(
+        from messages: [ChatTranscriptMessage],
+        latestPrompt: String
+    ) -> String {
+        let allowedRoles = Set(["system", "developer", "user"])
+        var texts = messages.compactMap { message -> String? in
+            guard allowedRoles.contains(message.role) else { return nil }
+            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { return nil }
+            return "\(message.role): \(content)"
+        }
+
+        let prompt = latestPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !texts.isEmpty else {
+            return prompt
+        }
+
+        if !prompt.isEmpty {
+            texts.append("user: \(prompt)")
+        }
+
+        return texts.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public static func resolveAutomaticAliasForSend(
         baselineAlias: String,
         latestPrompt: String,
@@ -60,6 +86,9 @@ public enum ModeAdviceCoordinator {
         baseURL: URL,
         adviceProvider: (String, String) async throws -> ProviderModeAdvice
     ) async -> String {
+        guard isModeAlias(baselineAlias) else {
+            return baselineAlias
+        }
         guard catalog.supportsModeAdvice(baseURL: baseURL) else {
             return baselineAlias
         }
@@ -85,6 +114,9 @@ public enum ModeAdviceCoordinator {
         adviceProvider: (String, String) async throws -> ProviderModeAdvice,
         userDecision: @MainActor (ModeAdviceSwitchPrompt) async -> Bool
     ) async -> String {
+        guard isModeAlias(selectedModel) else {
+            return selectedModel
+        }
         guard catalog.supportsModeAdvice(baseURL: baseURL) else {
             return selectedModel
         }
@@ -125,5 +157,43 @@ public enum ModeAdviceCoordinator {
         default:
             return nil
         }
+    }
+
+    public static func heuristicAliasForPrompt(
+        _ prompt: String,
+        baselineAlias: String,
+        catalog: ProviderModelCatalog
+    ) -> String {
+        guard isModeAlias(baselineAlias) else {
+            return baselineAlias
+        }
+
+        let normalizedPrompt = prompt.lowercased()
+        let planningPatterns = [
+            "how can i create",
+            "how do i create",
+            "how to create",
+            "how can i build",
+            "how do i build",
+            "how to build",
+            "plan how",
+            "plan this",
+            "implementation plan",
+            "architecture",
+            "breakdown",
+            "roadmap",
+            "sequence",
+        ]
+        if planningPatterns.contains(where: { normalizedPrompt.contains($0) }),
+           catalog.canSend(with: "mlx-plan")
+        {
+            return "mlx-plan"
+        }
+
+        return baselineAlias
+    }
+
+    public static func isModeAlias(_ model: String) -> Bool {
+        modeAliases.contains(model)
     }
 }

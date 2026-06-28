@@ -810,6 +810,17 @@ final class ChatMessagePresentationTests: XCTestCase {
         XCTAssertFalse(result.content.contains("assistantfinal"))
     }
 
+    func testAssistantBareCompactChannelTextDoesNotLeakAnalysisIntoVisibleAnswer() {
+        let result = ChatMessagePresentation.normalizedAssistantContent(
+            content: "analysisWe need to answer privately.assistantfinalBelow is the answer."
+        )
+
+        XCTAssertEqual(result.content, "Below is the answer.")
+        XCTAssertEqual(result.reasoning, "We need to answer privately.")
+        XCTAssertFalse(result.content.contains("analysis"))
+        XCTAssertFalse(result.content.contains("assistantfinal"))
+    }
+
     func testAssistantContentBlocksNormaliseChannelMarkedSavedContent() {
         let blocks = ChatMessagePresentation.contentBlocks(
             role: "assistant",
@@ -993,6 +1004,44 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertNil(legacy.usageState)
     }
 
+    func testUsageStateIsDisplayableWhenItHasDataOrCompletedStatus() {
+        XCTAssertTrue(
+            MLXStreamUsageState(
+                phase: "completed",
+                model: "mlx-community/Tiny",
+                context: MLXStreamUsageContext(),
+                tokens: MLXStreamUsageTokens()
+            ).hasDisplayableUsageData
+        )
+
+        XCTAssertFalse(
+            MLXStreamUsageState(
+                phase: "started",
+                model: "mlx-community/Tiny",
+                context: MLXStreamUsageContext(),
+                tokens: MLXStreamUsageTokens()
+            ).hasDisplayableUsageData
+        )
+
+        XCTAssertTrue(
+            MLXStreamUsageState(
+                phase: "started",
+                model: "mlx-community/Tiny",
+                context: MLXStreamUsageContext(limitTokens: 32768),
+                tokens: MLXStreamUsageTokens()
+            ).hasDisplayableUsageData
+        )
+
+        XCTAssertTrue(
+            MLXStreamUsageState(
+                phase: "completed",
+                model: "mlx-community/Tiny",
+                context: MLXStreamUsageContext(),
+                tokens: MLXStreamUsageTokens(inputTokens: 10, outputTokens: 4, totalTokens: 14)
+            ).hasDisplayableUsageData
+        )
+    }
+
     func testDeleteConversationRemovesFileAndIndexEntry() throws {
         let root = temporaryStoreRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1019,6 +1068,46 @@ final class ConversationStoreTests: XCTestCase {
 }
 
 final class ProviderModeAdviceTests: XCTestCase {
+    func testModeAdviceInputIncludesSystemDeveloperAndUserTextOnly() {
+        let input = ModeAdviceCoordinator.modeAdviceInput(
+            from: [
+                ChatTranscriptMessage(role: "system", content: "Use local provider routing."),
+                ChatTranscriptMessage(role: "developer", content: "You are in PLANNING mode."),
+                ChatTranscriptMessage(role: "assistant", content: "Earlier assistant answer."),
+                ChatTranscriptMessage(role: "tool", content: "Tool output."),
+                ChatTranscriptMessage(role: "user", content: "Map the repository first."),
+            ],
+            latestPrompt: "Plan the implementation."
+        )
+
+        XCTAssertEqual(
+            input,
+            """
+            system: Use local provider routing.
+
+            developer: You are in PLANNING mode.
+
+            user: Map the repository first.
+
+            user: Plan the implementation.
+            """
+        )
+        XCTAssertFalse(input.contains("Earlier assistant answer."))
+        XCTAssertFalse(input.contains("Tool output."))
+    }
+
+    func testModeAdviceInputFallsBackToLatestPromptWhenTranscriptHasNoRelevantText() {
+        let input = ModeAdviceCoordinator.modeAdviceInput(
+            from: [
+                ChatTranscriptMessage(role: "assistant", content: "Earlier assistant answer."),
+                ChatTranscriptMessage(role: "tool", content: "Tool output."),
+            ],
+            latestPrompt: "Plan the implementation."
+        )
+
+        XCTAssertEqual(input, "Plan the implementation.")
+    }
+
     func testFetchModeAdviceSendsLatestPromptAndSelectedModel() async throws {
         let transport = RecordingTransport(
             response: MockResponse(
@@ -1092,6 +1181,81 @@ final class ProviderModeAdviceTests: XCTestCase {
         XCTAssertFalse(transport.requestBodies[1].contains("mlx-community"))
     }
 
+    func testPlanningModePromptKeepsAliasAndSendsPromptContextForAdvice() async throws {
+        let transport = SequencedRecordingTransport(
+            responses: [
+                MockResponse(
+                    statusCode: 200,
+                    body: Data(
+                        #"{"suggested_mode":"plan","confidence":0.92,"should_suggest_switch":true,"current_mode":"coding","reason":"Planning mode prompt."}"#
+                            .utf8
+                    )
+                ),
+                MockResponse(
+                    statusCode: 200,
+                    body: Data(#"{"id":"chat","model":"mlx-plan","choices":[{"index":0,"message":{"role":"assistant","content":"planned"}}]}"#.utf8)
+                ),
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(
+                    id: "mlx-coding",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Coder",
+                    role: "coding",
+                    compatibilityType: "mlx",
+                    effectiveModel: "mlx-community/Active"
+                ),
+                ProviderModelMetadata(
+                    id: "mlx-plan",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Planner",
+                    role: "plan",
+                    compatibilityType: "mlx",
+                    effectiveModel: "mlx-community/Planner"
+                ),
+            ]
+        )
+        let messages = [
+            ChatTranscriptMessage(role: "developer", content: "You are in plan mode. Think first."),
+            ChatTranscriptMessage(role: "user", content: "Map the repository."),
+        ]
+        let adviceInput = ModeAdviceCoordinator.modeAdviceInput(
+            from: messages,
+            latestPrompt: "Propose the implementation sequence."
+        )
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-coding",
+            latestPrompt: adviceInput,
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { input, selectedModel in
+                try await client.fetchModeAdvice(input: input, selectedModel: selectedModel)
+            },
+            userDecision: { _ in true }
+        )
+        _ = try await client.completeChat(
+            model: modelID,
+            messages: messages + [
+                ChatTranscriptMessage(role: "user", content: "Propose the implementation sequence.")
+            ]
+        )
+
+        XCTAssertEqual(transport.requestPaths, ["/provider/v1/mode-advice", "/v1/chat/completions"])
+        XCTAssertTrue(transport.requestBodies[0].contains("developer: You are in plan mode. Think first."))
+        XCTAssertTrue(transport.requestBodies[0].contains("user: Map the repository."))
+        XCTAssertTrue(transport.requestBodies[0].contains("user: Propose the implementation sequence."))
+        XCTAssertTrue(transport.requestBodies[0].contains(#""selected_model":"mlx-coding""#))
+        XCTAssertTrue(transport.requestBodies[1].contains(#""model":"mlx-plan""#))
+        XCTAssertFalse(transport.requestBodies[1].contains("mlx-community/Coder"))
+        XCTAssertFalse(transport.requestBodies[1].contains("mlx-community/Active"))
+    }
+
     func testAutomaticModeAdviceUsesSuggestedAliasWithoutPrompting() async throws {
         let catalog = mlxModeAdviceCatalog()
 
@@ -1150,6 +1314,33 @@ final class ProviderModeAdviceTests: XCTestCase {
         )
 
         XCTAssertEqual(modelID, "mlx-ask")
+    }
+
+    func testHeuristicFallbackRoutesCreationHowToPromptsToPlanAlias() {
+        let modelID = ModeAdviceCoordinator.heuristicAliasForPrompt(
+            "how can I create a pong game as a SPA using only HTML/CSS/JS?",
+            baselineAlias: "mlx-ask",
+            catalog: mlxModeAdviceCatalog()
+        )
+
+        XCTAssertEqual(modelID, "mlx-plan")
+    }
+
+    func testHeuristicFallbackKeepsBaselineForConcreteModelSelection() {
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(id: "mlx-plan", capability: .chatText, state: "loaded"),
+                ProviderModelMetadata(id: "mlx-community/Explicit", capability: .chatText, state: "loaded"),
+            ]
+        )
+
+        let modelID = ModeAdviceCoordinator.heuristicAliasForPrompt(
+            "how can I create a pong game?",
+            baselineAlias: "mlx-community/Explicit",
+            catalog: catalog
+        )
+
+        XCTAssertEqual(modelID, "mlx-community/Explicit")
     }
 
     func testHighConfidencePlanAdviceBuildsSwitchPromptAndAcceptingUsesPlanAlias() async throws {
@@ -1325,6 +1516,43 @@ final class ProviderModeAdviceTests: XCTestCase {
 
         XCTAssertEqual(modelID, "mlx-coding")
         XCTAssertNotEqual(modelID, "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit")
+    }
+
+    func testExplicitConcreteModelSelectionIsNotReplacedByAliasMetadata() async throws {
+        let catalog = ProviderModelCatalog(
+            models: [
+                ProviderModelMetadata(
+                    id: "mlx-coding",
+                    capability: .chatText,
+                    state: "loaded",
+                    resolvedModel: "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
+                    role: "coding",
+                    compatibilityType: "mlx"
+                ),
+                ProviderModelMetadata(
+                    id: "mlx-community/Explicit",
+                    capability: .chatText,
+                    state: "loaded",
+                    compatibilityType: "mlx"
+                ),
+            ]
+        )
+        var didRequestAdvice = false
+
+        let modelID = await ModeAdviceCoordinator.resolveModelForSend(
+            selectedModel: "mlx-community/Explicit",
+            latestPrompt: "Implement this directly.",
+            catalog: catalog,
+            baseURL: URL(string: "http://127.0.0.1:8123")!,
+            adviceProvider: { _, _ in
+                didRequestAdvice = true
+                return ProviderModeAdvice(suggestedMode: "coding", confidence: 0.95, shouldSuggestSwitch: true, currentMode: nil, reason: nil)
+            },
+            userDecision: { _ in true }
+        )
+
+        XCTAssertEqual(modelID, "mlx-community/Explicit")
+        XCTAssertFalse(didRequestAdvice)
     }
 
     private func mlxModeAdviceCatalog() -> ProviderModelCatalog {

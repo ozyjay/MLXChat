@@ -277,11 +277,70 @@ struct ChatPaneView: View {
                 ErrorBanner(message: errorMessage)
             }
 
+            if let routeChoicePrompt = viewModel.routeChoicePrompt {
+                Divider()
+                RouteChoiceBanner(
+                    prompt: routeChoicePrompt,
+                    useSuggestedAction: viewModel.useSuggestedRoute,
+                    keepCurrentAction: viewModel.keepCurrentRoute
+                )
+            }
+
             Divider()
 
             ComposerView(viewModel: viewModel, focusedField: focusedField)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct RouteChoicePrompt: Identifiable, Equatable {
+    let id = UUID()
+    let currentAlias: String
+    let suggestedAlias: String
+    let reason: String
+
+    var title: String {
+        "Dashboard is unsure which route to use."
+    }
+
+    var detail: String {
+        "\(reason) Use \(suggestedAlias) for this send, or keep \(currentAlias)?"
+    }
+}
+
+struct RouteChoiceBanner: View {
+    let prompt: RouteChoicePrompt
+    let useSuggestedAction: () -> Void
+    let keepCurrentAction: () -> Void
+    @AppStorage("MLXChat.messageFontSize") private var messageFontSize = 14.0
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(AppFont.body(messageFontSize))
+                .foregroundStyle(Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(prompt.title)
+                    .font(AppFont.body(messageFontSize, weight: .semibold))
+                Text(prompt.detail)
+                    .font(AppFont.label(messageFontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button("Keep \(prompt.currentAlias)", action: keepCurrentAction)
+                .font(AppFont.label(messageFontSize))
+
+            Button("Use \(prompt.suggestedAlias)", action: useSuggestedAction)
+                .font(AppFont.label(messageFontSize, weight: .semibold))
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .background(Color.accentColor.opacity(0.10))
     }
 }
 
@@ -425,7 +484,9 @@ struct ChatBubble: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                if !isUser, let usageState = message.usageState {
+                if !isUser,
+                   let usageState = message.usageState,
+                   usageState.hasDisplayableUsageData {
                     StreamUsageView(usageState: usageState, baseFontSize: messageFontSize)
                 }
 
@@ -448,6 +509,7 @@ struct ChatBubble: View {
                 EmptyView()
             }
         }
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 }
 
@@ -538,8 +600,8 @@ struct StreamUsageView: View {
         if let tokenSummary = usageState.tokenSummary {
             values.append(tokenSummary)
         }
-        if values.isEmpty {
-            values.append("Usage: unknown")
+        if values.isEmpty, usageState.phase == "completed" {
+            values.append("Usage: not reported by provider")
         }
         return values
     }
@@ -569,9 +631,37 @@ struct StreamUsageView: View {
 struct ThinkingPanel: View {
     let reasoning: String
     let baseFontSize: Double
+    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(AppFont.label(baseFontSize, weight: .semibold))
+                        .imageScale(.small)
+                    Image(systemName: "brain.head.profile")
+                        .font(AppFont.label(baseFontSize))
+                        .imageScale(.small)
+                    Text("Thinking")
+                        .font(AppFont.label(baseFontSize, weight: .semibold))
+                    Text("internal reasoning")
+                        .font(AppFont.small(baseFontSize))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Divider()
+                    .opacity(0.35)
+
             MarkdownBlockView(
                 blocks: ChatMessagePresentation.contentBlocks(
                     role: "assistant",
@@ -580,21 +670,9 @@ struct ThinkingPanel: View {
                 baseFontSize: baseFontSize,
                 isReasoning: true
             )
-            .padding(.top, 8)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "brain.head.profile")
-                    .font(AppFont.label(baseFontSize))
-                    .imageScale(.small)
-                Text("Thinking")
-                    .font(AppFont.label(baseFontSize, weight: .semibold))
-                Text("internal reasoning")
-                    .font(AppFont.small(baseFontSize))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .tint(.orange)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.orange.opacity(0.10))
@@ -617,6 +695,7 @@ struct MessageContentText: View {
                 blocks: ChatMessagePresentation.contentBlocks(role: message.role, content: displayContent),
                 baseFontSize: messageFontSize
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             Text(displayContent)
                 .font(AppFont.body(messageFontSize))
@@ -635,6 +714,7 @@ struct MarkdownBlockView: View {
                 blockView(block)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -643,17 +723,24 @@ struct MarkdownBlockView: View {
         case .paragraph:
             Text(inlineMarkdown(block.text))
                 .font(AppFont.body(baseFontSize))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         case .heading:
             Text(inlineMarkdown(block.text))
                 .font(AppFont.body(headingFontSize(for: block.level), weight: .semibold))
                 .padding(.top, 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
         case .bulletListItem, .unorderedListItem:
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("-")
                     .font(AppFont.body(baseFontSize))
                 Text(inlineMarkdown(block.text))
                     .font(AppFont.body(baseFontSize))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .numberedListItem:
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(block.ordinal ?? 1).")
@@ -661,7 +748,10 @@ struct MarkdownBlockView: View {
                     .monospacedDigit()
                 Text(inlineMarkdown(block.text))
                     .font(AppFont.body(baseFontSize))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .code:
             Text(block.text)
                 .font(AppFont.code(baseFontSize))
@@ -886,11 +976,13 @@ final class ChatAppViewModel: ObservableObject {
     @Published var isRefreshing = false
     @Published var isSending = false
     @Published var activeSendStatus: String?
+    @Published var routeChoicePrompt: RouteChoicePrompt?
 
     private var hasConfigured = false
     private let conversationStore = ConversationStore()
     private var activeConversation: StoredConversation?
     private var saveTask: Task<Void, Never>?
+    private var routeChoiceContinuation: CheckedContinuation<Bool, Never>?
 
     private var catalog: ProviderModelCatalog {
         ProviderModelCatalog(models: models)
@@ -902,6 +994,14 @@ final class ChatAppViewModel: ObservableObject {
             && !requestModelAlias.isEmpty
             && LocalProviderURLValidator.providerURL(from: baseURLText) != nil
             && catalog.canSend(with: requestModelAlias)
+    }
+
+    func useSuggestedRoute() {
+        finishRouteChoice(useSuggested: true)
+    }
+
+    func keepCurrentRoute() {
+        finishRouteChoice(useSuggested: false)
     }
 
     func configure(baseURLText: String) {
@@ -1047,7 +1147,11 @@ final class ChatAppViewModel: ObservableObject {
         activeSendStatus = "Checking route advice..."
 
         let baselineAlias = requestModelAlias
-        let modelForSend = await resolveAliasForSend(prompt: prompt, baseURL: baseURL)
+        let adviceInput = ModeAdviceCoordinator.modeAdviceInput(
+            from: messages.map { ChatTranscriptMessage(role: $0.role, content: $0.content) },
+            latestPrompt: prompt
+        )
+        let modelForSend = await resolveAliasForSend(prompt: adviceInput, baseURL: baseURL)
         requestModelAlias = modelForSend
         updateRoutingStatus(alias: modelForSend)
         activeSendStatus = baselineAlias == modelForSend
@@ -1145,6 +1249,8 @@ final class ChatAppViewModel: ObservableObject {
 
         isSending = false
         activeSendStatus = nil
+        routeChoicePrompt = nil
+        routeChoiceContinuation = nil
     }
 
     private func resolveAliasForSend(prompt: String, baseURL: URL) async -> String {
@@ -1161,17 +1267,87 @@ final class ChatAppViewModel: ObservableObject {
                 input: prompt,
                 selectedModel: baselineAlias
             )
-            let suggestedAlias = ModeAdviceCoordinator.alias(for: advice.suggestedMode)
-            let alias = suggestedAlias.flatMap { catalog.canSend(with: $0) ? $0 : nil } ?? baselineAlias
+            if let suggestedAlias = ModeAdviceCoordinator.alias(for: advice.suggestedMode),
+               catalog.canSend(with: suggestedAlias)
+            {
+                updateRoutingStatus(alias: suggestedAlias, advice: advice)
+                activeSendStatus = suggestedAlias == baselineAlias
+                    ? "Route advice kept \(baselineAlias)"
+                    : "Route advice selected \(suggestedAlias)"
+                return suggestedAlias
+            }
+
+            let alias = await promptForHeuristicRouteIfNeeded(
+                prompt: prompt,
+                baselineAlias: baselineAlias,
+                reason: "The prompt looks planning-oriented, but Dashboard did not make a confident route suggestion."
+            )
             updateRoutingStatus(alias: alias, advice: advice)
             activeSendStatus = alias == baselineAlias
                 ? "Route advice kept \(baselineAlias)"
                 : "Route advice selected \(alias)"
             return alias
         } catch {
-            activeSendStatus = "Route advice unavailable; using \(baselineAlias)"
+            let alias = await promptForHeuristicRouteIfNeeded(
+                prompt: prompt,
+                baselineAlias: baselineAlias,
+                reason: "Route advice was unavailable, but the prompt looks planning-oriented."
+            )
+            activeSendStatus = alias == baselineAlias
+                ? "Route advice unavailable; using \(baselineAlias)"
+                : "Route advice unavailable; user selected \(alias)"
+            updateRoutingStatus(alias: alias)
+            return alias
+        }
+    }
+
+    private func promptForHeuristicRouteIfNeeded(
+        prompt: String,
+        baselineAlias: String,
+        reason: String
+    ) async -> String {
+        let suggestedAlias = ModeAdviceCoordinator.heuristicAliasForPrompt(
+            prompt,
+            baselineAlias: baselineAlias,
+            catalog: catalog
+        )
+        guard suggestedAlias != baselineAlias else {
             return baselineAlias
         }
+
+        activeSendStatus = "Route advice unsure; waiting for your choice"
+        let shouldUseSuggested = await askForRouteChoice(
+            currentAlias: baselineAlias,
+            suggestedAlias: suggestedAlias,
+            reason: reason
+        )
+        return shouldUseSuggested ? suggestedAlias : baselineAlias
+    }
+
+    private func askForRouteChoice(
+        currentAlias: String,
+        suggestedAlias: String,
+        reason: String
+    ) async -> Bool {
+        if let routeChoiceContinuation {
+            routeChoiceContinuation.resume(returning: false)
+            self.routeChoiceContinuation = nil
+        }
+
+        return await withCheckedContinuation { continuation in
+            routeChoiceContinuation = continuation
+            routeChoicePrompt = RouteChoicePrompt(
+                currentAlias: currentAlias,
+                suggestedAlias: suggestedAlias,
+                reason: reason
+            )
+        }
+    }
+
+    private func finishRouteChoice(useSuggested: Bool) {
+        routeChoicePrompt = nil
+        routeChoiceContinuation?.resume(returning: useSuggested)
+        routeChoiceContinuation = nil
     }
 
     func clearTranscript() {
