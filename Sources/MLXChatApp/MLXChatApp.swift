@@ -402,6 +402,10 @@ struct ChatHeaderView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
+
+                if let headerUsageState = viewModel.headerUsageState {
+                    StreamUsageView(usageState: headerUsageState, baseFontSize: messageFontSize)
+                }
             }
 
             Spacer()
@@ -959,6 +963,7 @@ private extension MLXStreamUsageState {
             tokens.inputTokens.map { "input=\($0)" },
             tokens.outputTokens.map { "output=\($0)" },
             tokens.totalTokens.map { "total=\($0)" },
+            tokens.estimated.map { "estimated=\($0)" },
         ]
         .compactMap { $0 }
         .joined(separator: " ")
@@ -1015,6 +1020,10 @@ final class ChatAppViewModel: ObservableObject {
             && !requestModelAlias.isEmpty
             && LocalProviderURLValidator.providerURL(from: baseURLText) != nil
             && catalog.canSend(with: requestModelAlias)
+    }
+
+    var headerUsageState: MLXStreamUsageState? {
+        ChatUsagePresentation.latestHeaderUsageState(in: messages)
     }
 
     func selectRouteChoice(_ alias: String) {

@@ -537,6 +537,47 @@ final class ProviderChatCompletionTests: XCTestCase {
         ])
     }
 
+    func testStreamChatParsesProgressiveMLXUsageEventsWithoutAppendingAssistantText() async throws {
+        let transport = StreamingRecordingTransport(
+            statusCode: 200,
+            chunks: [
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"started","model":"mlx-plan -> mlx-community/Qwen3.6-35B-A3B-4bit","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":null,"output_tokens":null,"total_tokens":null,"estimated":false}}"#
+                    + "\n\n",
+                #"data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}"# + "\n\n",
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"streaming","model":"mlx-plan -> mlx-community/Qwen3.6-35B-A3B-4bit","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":10,"output_tokens":4,"total_tokens":14,"estimated":true}}"#
+                    + "\n\n",
+                #"data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}"# + "\n\n",
+                #"event: mlx.usage"# + "\n"
+                    + #"data: {"type":"mlx.usage","phase":"completed","model":"mlx-plan -> mlx-community/Qwen3.6-35B-A3B-4bit","context":{"limit_tokens":32768,"used_tokens":null,"remaining_tokens":null,"usage_ratio":null},"tokens":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"estimated":false}}"#
+                    + "\n\n",
+                #"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"# + "\n\n",
+                "data: [DONE]\n\n",
+            ]
+        )
+        let client = ProviderClient(baseURL: URL(string: "http://127.0.0.1:8123")!, transport: transport)
+
+        let deltas = try await collectStream(
+            client.streamChat(
+                model: "mlx-plan",
+                messages: [ChatTranscriptMessage(role: "user", content: "Plan a Pong SPA")]
+            )
+        )
+
+        XCTAssertEqual(deltas.map(\.content).joined(), "Hello")
+        XCTAssertEqual(deltas.compactMap(\.usageState).map(\.phase), ["started", "streaming", "completed"])
+        XCTAssertEqual(deltas.compactMap(\.usageState).map(\.model), [
+            "mlx-plan -> mlx-community/Qwen3.6-35B-A3B-4bit",
+            "mlx-plan -> mlx-community/Qwen3.6-35B-A3B-4bit",
+            "mlx-plan -> mlx-community/Qwen3.6-35B-A3B-4bit",
+        ])
+        XCTAssertEqual(deltas.compactMap(\.usageState)[1].tokens.totalTokens, 14)
+        XCTAssertEqual(deltas.compactMap(\.usageState)[1].tokens.estimated, true)
+        XCTAssertEqual(deltas.compactMap(\.usageState)[2].tokens.totalTokens, 15)
+        XCTAssertEqual(deltas.compactMap(\.usageState)[2].tokens.estimated, false)
+    }
+
     func testStreamChatUsageEventsPreserveNullValuesAsUnknown() async throws {
         let transport = StreamingRecordingTransport(
             statusCode: 200,
@@ -1054,7 +1095,7 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertNil(legacy.usageState)
     }
 
-    func testUsageStateIsDisplayableWhenItHasDataOrCompletedStatus() {
+    func testUsageStateIsDisplayableWhenItHasDataOrProviderPhase() {
         XCTAssertTrue(
             MLXStreamUsageState(
                 phase: "completed",
@@ -1064,7 +1105,7 @@ final class ConversationStoreTests: XCTestCase {
             ).hasDisplayableUsageData
         )
 
-        XCTAssertFalse(
+        XCTAssertTrue(
             MLXStreamUsageState(
                 phase: "started",
                 model: "mlx-community/Tiny",
@@ -1114,7 +1155,47 @@ final class ConversationStoreTests: XCTestCase {
             [
                 "Usage: streaming",
                 "Context: 1,536 / 32,768 used (4.7%) - 31,232 remaining",
-                "Tokens: 120 in / 45 out / 165 total",
+                "Tokens: 165 total / 120 in / 45 out",
+            ]
+        )
+    }
+
+    func testUsageStateDisplayLinesLabelEstimatedStreamingTotals() {
+        let usageState = MLXStreamUsageState(
+            phase: "streaming",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(limitTokens: 32768),
+            tokens: MLXStreamUsageTokens(
+                inputTokens: 120,
+                outputTokens: 45,
+                totalTokens: 165,
+                estimated: true
+            )
+        )
+
+        XCTAssertEqual(
+            usageState.displayLines,
+            [
+                "Usage: streaming",
+                "Context: 32,768 limit",
+                "Tokens: ~165 total / 120 in / 45 out",
+            ]
+        )
+    }
+
+    func testUsageStateDisplayLinesFallsBackToComputedTotalWhenMissing() {
+        let usageState = MLXStreamUsageState(
+            phase: "completed",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(),
+            tokens: MLXStreamUsageTokens(inputTokens: 120, outputTokens: 45)
+        )
+
+        XCTAssertEqual(
+            usageState.displayLines,
+            [
+                "Usage: completed",
+                "Tokens: 165 total / 120 in / 45 out",
             ]
         )
     }
@@ -1146,6 +1227,44 @@ final class ConversationStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(usageState.displayLines, ["Usage: not reported by provider"])
+    }
+
+    func testLatestHeaderUsageStateUsesLatestAssistantUsageWithUsableDisplayLines() {
+        let olderUsage = MLXStreamUsageState(
+            phase: "completed",
+            model: "mlx-ask -> mlx-community/Small",
+            context: MLXStreamUsageContext(),
+            tokens: MLXStreamUsageTokens(inputTokens: 10, outputTokens: 4, totalTokens: 14)
+        )
+        let latestUsage = MLXStreamUsageState(
+            phase: "streaming",
+            model: "mlx-plan -> mlx-community/Large",
+            context: MLXStreamUsageContext(limitTokens: 32768),
+            tokens: MLXStreamUsageTokens(outputTokens: 45, estimated: true)
+        )
+
+        let messages = [
+            ChatDisplayMessage(role: "assistant", content: "older", usageState: olderUsage),
+            ChatDisplayMessage(role: "user", content: "newer user", usageState: latestUsage),
+            ChatDisplayMessage(role: "assistant", content: "latest", usageState: latestUsage),
+        ]
+
+        XCTAssertEqual(ChatUsagePresentation.latestHeaderUsageState(in: messages), latestUsage)
+    }
+
+    func testLatestHeaderUsageStateSkipsUnknownCompletedUsage() {
+        let unknownUsage = MLXStreamUsageState(
+            phase: "completed",
+            model: "mlx-community/Tiny",
+            context: MLXStreamUsageContext(),
+            tokens: MLXStreamUsageTokens()
+        )
+
+        XCTAssertNil(
+            ChatUsagePresentation.latestHeaderUsageState(
+                in: [ChatDisplayMessage(role: "assistant", content: "", usageState: unknownUsage)]
+            )
+        )
     }
 
     func testDeleteConversationRemovesFileAndIndexEntry() throws {

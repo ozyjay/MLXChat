@@ -57,7 +57,7 @@ public struct MLXStreamUsageState: Codable, Equatable, Sendable {
     public let tokens: MLXStreamUsageTokens
 
     public var hasDisplayableUsageData: Bool {
-        phase == "completed"
+        !phase.isEmpty
             || context.limitTokens != nil
             || context.usedTokens != nil
             || context.remainingTokens != nil
@@ -137,10 +137,15 @@ public struct MLXStreamUsageState: Codable, Equatable, Sendable {
     }
 
     private var tokenLine: String? {
+        let totalTokens = tokens.totalTokens
+            ?? tokens.inputTokens.flatMap { input in
+                tokens.outputTokens.map { output in input + output }
+            }
+        let estimatedPrefix = tokens.estimated == true ? "~" : ""
         let parts = [
+            totalTokens.map { "\(estimatedPrefix)\(Self.format($0)) total" },
             tokens.inputTokens.map { "\(Self.format($0)) in" },
             tokens.outputTokens.map { "\(Self.format($0)) out" },
-            tokens.totalTokens.map { "\(Self.format($0)) total" },
         ]
         .compactMap { $0 }
 
@@ -201,21 +206,25 @@ public struct MLXStreamUsageTokens: Codable, Equatable, Sendable {
     public let inputTokens: Int?
     public let outputTokens: Int?
     public let totalTokens: Int?
+    public let estimated: Bool?
 
     public init(
         inputTokens: Int? = nil,
         outputTokens: Int? = nil,
-        totalTokens: Int? = nil
+        totalTokens: Int? = nil,
+        estimated: Bool? = nil
     ) {
         self.inputTokens = inputTokens
         self.outputTokens = outputTokens
         self.totalTokens = totalTokens
+        self.estimated = estimated
     }
 
     private enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
         case totalTokens = "total_tokens"
+        case estimated
     }
 }
 
